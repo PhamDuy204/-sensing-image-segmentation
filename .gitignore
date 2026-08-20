@@ -1,0 +1,9 @@
+datasets/
+outputs/
+wandb/
+__pycache__/
+*.py[cod]
+*.log
+.env
+
+.worktrees/
