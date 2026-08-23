@@ -134,6 +134,7 @@ def run_training(args) -> Path:
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accumulation,
         mixed_precision=args.mixed_precision,
+        step_scheduler_with_optimizer=False,
         dataloader_config=DataLoaderConfiguration(
             non_blocking=True,
             use_seedable_sampler=True,
