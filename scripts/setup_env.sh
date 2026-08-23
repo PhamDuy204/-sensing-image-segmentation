@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-python}"
-MAMBA_VERSION="2.2.6.post3"
+MAMBA_VERSION="2.3.2.post1"
 TMP_REQ="$(mktemp)"
 trap 'rm -f "$TMP_REQ"' EXIT
 
@@ -68,6 +68,7 @@ import mamba_ssm
 import selective_scan_cuda
 import torch
 import wandb
+from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
 
 print(
     f"environment OK: torch={torch.__version__} "
@@ -75,4 +76,18 @@ print(
 )
 print(f"mamba_ssm={getattr(mamba_ssm, '__version__', 'installed')}")
 print(f"selective_scan_cuda={selective_scan_cuda.__file__}")
+
+# Run the actual CUDA extension once so ABI/import success alone cannot hide a runtime mismatch.
+device = torch.device("cuda")
+u = torch.randn(1, 2, 4, device=device)
+delta = torch.randn(1, 2, 4, device=device)
+A = -torch.rand(2, 2, device=device)
+B = torch.randn(1, 2, 4, device=device)
+C = torch.randn(1, 2, 4, device=device)
+D = torch.ones(2, device=device)
+out = selective_scan_fn(u, delta, A, B, C, D, delta_softplus=True)
+torch.cuda.synchronize()
+if out.shape != u.shape or not torch.isfinite(out).all():
+    raise SystemExit("ERROR: selective_scan CUDA smoke test returned an invalid result")
+print("selective_scan_cuda_smoke=OK")
 PY
