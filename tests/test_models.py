@@ -61,6 +61,9 @@ def test_mambavision_adapter_contract_with_fake_backbone():
                 nn.Conv2d(160, 320, 2, 2),
                 nn.Conv2d(320, 640, 2, 2),
             ])
+            self.model = nn.Module()
+            self.model.norm = nn.LayerNorm(640)
+            self.model.head = nn.Linear(640, 1000)
 
         def forward(self, images):
             features = []
@@ -68,7 +71,7 @@ def test_mambavision_adapter_contract_with_fake_backbone():
             for stage in self.stages:
                 x = stage(x)
                 features.append(x)
-            return x.mean((2, 3)), features
+            return self.model.norm(x.mean((2, 3))), features
 
     model = MambaVisionAdapter(
         variant="tiny",
@@ -80,6 +83,7 @@ def test_mambavision_adapter_contract_with_fake_backbone():
     logits = model(x)
     assert logits.shape == (1, 9, 64, 64)
     logits.mean().backward()
+    assert all(parameter.grad is not None for parameter in model.parameters() if parameter.requires_grad)
     groups = model.parameter_groups(base_lr=6e-4, backbone_lr=6e-5)
     ids = [{id(p) for p in group["params"]} for group in groups]
     assert ids[0] and ids[1] and ids[0].isdisjoint(ids[1])
