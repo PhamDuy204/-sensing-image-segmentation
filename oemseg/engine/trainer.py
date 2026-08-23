@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from oemseg.data.loaders import build_loaders, write_split_manifests
 from oemseg.engine.checkpoint import save_checkpoint
-from oemseg.engine.error_analysis import write_error_analysis
+from oemseg.engine.error_analysis import write_best_checkpoint_analysis, write_error_analysis
 from oemseg.engine.evaluator import evaluate
 from oemseg.losses.registry import build_loss
 from oemseg.metrics.segmentation import flatten_metrics
@@ -119,6 +119,11 @@ def _log_analysis_artifact(wandb, wandb_run, run_name: str, run_dir: Path) -> No
         "bad_predictions_test.tsv",
         "bad_predictions_val_best.tsv",
         "bad_predictions_test_at_best_val.tsv",
+        "best_checkpoint_summary.json",
+        "best_checkpoint_val_scores.tsv",
+        "best_checkpoint_test_scores.tsv",
+        "below_mean_val.tsv",
+        "below_mean_test.tsv",
     ):
         path = run_dir / filename
         if path.exists():
@@ -356,22 +361,46 @@ def run_training(args) -> Path:
                 logger.info("early_stop epoch: %d patience: %d", epoch, args.patience)
                 break
 
-    if wandb_run and best_val_epoch is not None:
-        try:
-            import wandb
-
-            best_checkpoint = torch.load(
-                run_dir / "best_val_miou.pt",
-                map_location=accelerator.device,
-                weights_only=False,
+    best_checkpoint_stats: dict[str, object] = {}
+    if best_val_epoch is not None:
+        accelerator.wait_for_everyone()
+        best_checkpoint = torch.load(
+            run_dir / "best_val_miou.pt",
+            map_location=accelerator.device,
+            weights_only=False,
+        )
+        best_model = accelerator.unwrap_model(model)
+        best_model.load_state_dict(best_checkpoint["model"])
+        best_val_result = evaluate(
+            model, loaders.internal_val, criterion, accelerator, args.tta_scales,
+            not args.no_tta_flips, max_batches, channels_last=args.channels_last,
+        )
+        best_test_result = evaluate(
+            model, loaders.test, criterion, accelerator, args.tta_scales,
+            not args.no_tta_flips, max_batches, channels_last=args.channels_last,
+        )
+        if accelerator.is_main_process:
+            val_analysis = write_best_checkpoint_analysis(run_dir, "val", best_val_result.samples)
+            test_analysis = write_best_checkpoint_analysis(run_dir, "test", best_test_result.samples)
+            best_checkpoint_stats = {
+                "epoch": best_val_epoch,
+                "val": {"loss": best_val_result.loss, "miou": best_val_result.metrics.miou, **val_analysis},
+                "test": {"loss": best_test_result.loss, "miou": best_test_result.metrics.miou, **test_analysis},
+            }
+            (run_dir / "best_checkpoint_summary.json").write_text(
+                json.dumps(best_checkpoint_stats, indent=2)
             )
-            best_model = accelerator.unwrap_model(model)
-            best_model.load_state_dict(best_checkpoint["model"])
+            logger.info(
+                "best_checkpoint epoch: %d val_miou: %.6f test_miou: %.6f",
+                best_val_epoch, best_val_result.metrics.miou, best_test_result.metrics.miou,
+            )
+
+    if wandb_run and best_val_epoch is not None:
+        import wandb
+
+        try:
             visualizations = render_best_checkpoint_visualizations(
-                best_model,
-                args,
-                run_dir,
-                accelerator,
+                accelerator.unwrap_model(model), args, run_dir, accelerator
             )
             media = {}
             for split, info in visualizations.items():
@@ -381,14 +410,17 @@ def run_training(args) -> Path:
                     str(info["path"]),
                     caption=(
                         f"best validation epoch={best_val_epoch}; rows: original / ground truth / prediction; "
-                        f"samples={len(names)}; sampled_from_error_list={len(bad_names)}"
+                        f"samples={len(names)}; sampled_from_below_mean={len(bad_names)}"
                     ),
                 )
             if media:
                 wandb_run.log(media)
-            _log_analysis_artifact(wandb, wandb_run, run_name, run_dir)
         except Exception:
             logger.exception("W&B best-checkpoint visualization failed")
+        try:
+            _log_analysis_artifact(wandb, wandb_run, run_name, run_dir)
+        except Exception:
+            logger.exception("W&B analysis artifact logging failed")
 
     if accelerator.is_main_process and args.notify_email:
         try:
@@ -408,15 +440,30 @@ def run_training(args) -> Path:
             logger.exception("email notification failed")
 
     if wandb_run:
-        wandb_run.summary.update(
-            {
-                "best_val_miou": best_val_miou,
-                "best_val_epoch": best_val_epoch,
-                "best_test_miou_observed": best_test_miou,
-                "best_test_epoch_observed": best_test_epoch,
-                "final_test_miou": final_test_miou,
-            }
-        )
+        summary = {
+            "best_val_miou": best_val_miou,
+            "best_val_epoch": best_val_epoch,
+            "best_test_miou_observed": best_test_miou,
+            "best_test_epoch_observed": best_test_epoch,
+            "final_test_miou": final_test_miou,
+        }
+        if best_val_epoch is not None:
+            summary.update({"best/epoch": best_val_epoch, "best/val_miou": best_val_miou})
+        if best_checkpoint_stats:
+            val_stats = best_checkpoint_stats["val"]
+            test_stats = best_checkpoint_stats["test"]
+            summary.update(
+                {
+                    "best/epoch": best_val_epoch,
+                    "best/val_miou": val_stats["miou"],
+                    "best/test_miou": test_stats["miou"],
+                    "best/val_sample_mean_miou": val_stats["sample_mean_miou"],
+                    "best/test_sample_mean_miou": test_stats["sample_mean_miou"],
+                    "best/val_below_mean_count": val_stats["below_mean_count"],
+                    "best/test_below_mean_count": test_stats["below_mean_count"],
+                }
+            )
+        wandb_run.summary.update(summary)
         wandb_run.finish()
     accelerator.wait_for_everyone()
     logger.info("run_complete output: %s", run_dir)

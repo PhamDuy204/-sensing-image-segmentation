@@ -122,9 +122,15 @@ def render_best_checkpoint_visualizations(
     split_dir = run_dir / "splits"
     bad_sources = {
         "train": None,
-        "val": run_dir / "bad_predictions_val_best.tsv",
+        "val": (
+            run_dir / "below_mean_val.tsv"
+            if (run_dir / "below_mean_val.tsv").exists()
+            else run_dir / "bad_predictions_val_best.tsv"
+        ),
         "test": (
-            run_dir / "bad_predictions_test_at_best_val.tsv"
+            run_dir / "below_mean_test.tsv"
+            if (run_dir / "below_mean_test.tsv").exists()
+            else run_dir / "bad_predictions_test_at_best_val.tsv"
             if (run_dir / "bad_predictions_test_at_best_val.tsv").exists()
             else run_dir / "bad_predictions_test.tsv"
         ),
