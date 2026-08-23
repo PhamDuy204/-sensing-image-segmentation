@@ -40,8 +40,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--poly-power", type=float, default=0.9)
-    parser.add_argument("--eval-start-fraction", type=float, default=0.0)
+    parser.add_argument(
+        "--eval-start-epoch",
+        type=int,
+        default=30,
+        help="number of initial train-only epochs before validation begins",
+    )
+    parser.add_argument(
+        "--eval-start-fraction",
+        type=float,
+        default=None,
+        help="legacy fraction-based schedule; when set, validation and test run together",
+    )
     parser.add_argument("--eval-every", type=int, default=1)
+    parser.add_argument("--test-every-validations", type=int, default=3)
     parser.add_argument("--tta-scales", nargs="+", type=float, default=[0.75, 1.0, 1.25])
     parser.add_argument("--no-tta-flips", action="store_true")
     parser.add_argument("--workers", type=int, default=4)
@@ -56,6 +68,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb-project", default="oem-segmentation")
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="online")
+    parser.add_argument("--notify-email", default=None, help="send an end-of-run summary to this address")
+    parser.add_argument("--smtp-host", default="smtp.gmail.com")
+    parser.add_argument("--smtp-port", type=int, default=587)
+    parser.add_argument("--smtp-user", default=None)
+    parser.add_argument("--smtp-from", default=None)
+    parser.add_argument("--smtp-password-env", default="SMTP_PASSWORD")
+    parser.add_argument("--smtp-no-starttls", action="store_true")
     parser.add_argument("--smoke", action="store_true", help="Run one train and one evaluation batch")
     return parser
 
@@ -98,8 +117,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--bad-predict-top-n must be >= 1")
     if not 0 <= args.internal_val_fraction < 1:
         parser.error("--internal-val-fraction must be in [0, 1)")
-    if not 0 <= args.eval_start_fraction <= 1 or args.eval_every < 1:
-        parser.error("evaluation requires --eval-start-fraction in [0, 1] and --eval-every >= 1")
+    if args.eval_start_epoch < 0 or args.eval_every < 1 or args.test_every_validations < 1:
+        parser.error("evaluation requires --eval-start-epoch >= 0 and positive evaluation intervals")
+    if args.eval_start_fraction is not None and not 0 <= args.eval_start_fraction <= 1:
+        parser.error("--eval-start-fraction must be in [0, 1]")
+    if args.smtp_port < 1:
+        parser.error("--smtp-port must be >= 1")
     if args.epochs < 1 or args.batch_size < 1 or args.eval_batch_size < 1:
         parser.error("epochs and batch sizes must be >= 1")
     return args
