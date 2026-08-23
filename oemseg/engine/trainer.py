@@ -28,6 +28,7 @@ from oemseg.schedulers.factory import build_scheduler, evaluation_schedule, shou
 from oemseg.utils.logging import config_dict, format_log_metrics, logger_for
 from oemseg.utils.notifications import send_training_email, validate_email_settings
 from oemseg.utils.reproducibility import seed_everything
+from oemseg.utils.visualization import render_best_checkpoint_visualizations
 
 
 def configure_torch_performance(device: torch.device) -> None:
@@ -106,6 +107,25 @@ def _log_repro_artifact(wandb, wandb_run, run_name: str, run_dir: Path) -> None:
     notebook = root / "notebooks/kaggle_multi_gpu.ipynb"
     if notebook.exists():
         artifact.add_file(str(notebook), name="notebooks/kaggle_multi_gpu.ipynb")
+    wandb_run.log_artifact(artifact)
+
+
+def _log_analysis_artifact(wandb, wandb_run, run_name: str, run_dir: Path) -> None:
+    artifact = wandb.Artifact(f"{run_name}-analysis", type="analysis")
+    for filename in (
+        "metrics.jsonl",
+        "sample_scores.jsonl",
+        "bad_predictions_val.tsv",
+        "bad_predictions_test.tsv",
+        "bad_predictions_val_best.tsv",
+        "bad_predictions_test_at_best_val.tsv",
+    ):
+        path = run_dir / filename
+        if path.exists():
+            artifact.add_file(str(path), name=filename)
+    visualization_dir = run_dir / "visualizations"
+    if visualization_dir.exists():
+        artifact.add_dir(str(visualization_dir), name="visualizations")
     wandb_run.log_artifact(artifact)
 
 
@@ -334,6 +354,40 @@ def run_training(args) -> Path:
             if loaders.internal_val is not None and args.patience > 0 and stale >= args.patience:
                 logger.info("early_stop epoch: %d patience: %d", epoch, args.patience)
                 break
+
+    if wandb_run and best_val_epoch is not None:
+        try:
+            import wandb
+
+            best_checkpoint = torch.load(
+                run_dir / "best_val_miou.pt",
+                map_location=accelerator.device,
+                weights_only=False,
+            )
+            best_model = accelerator.unwrap_model(model)
+            best_model.load_state_dict(best_checkpoint["model"])
+            visualizations = render_best_checkpoint_visualizations(
+                best_model,
+                args,
+                run_dir,
+                accelerator,
+            )
+            media = {}
+            for split, info in visualizations.items():
+                names = list(info["names"])
+                bad_names = list(info["bad_names"])
+                media[f"best_checkpoint/{split}_examples"] = wandb.Image(
+                    str(info["path"]),
+                    caption=(
+                        f"best validation epoch={best_val_epoch}; rows: original / ground truth / prediction; "
+                        f"samples={len(names)}; sampled_from_error_list={len(bad_names)}"
+                    ),
+                )
+            if media:
+                wandb_run.log(media)
+            _log_analysis_artifact(wandb, wandb_run, run_name, run_dir)
+        except Exception:
+            logger.exception("W&B best-checkpoint visualization failed")
 
     if accelerator.is_main_process and args.notify_email:
         try:

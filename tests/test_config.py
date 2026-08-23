@@ -20,6 +20,8 @@ def test_default_cli_preserves_training_behavior_with_staged_evaluation():
     assert args.bad_predict_top_n == 30
     assert args.mixed_precision == "fp16"
     assert args.channels_last is False
+    assert args.wandb_project == "sensing image segmentation"
+    assert args.wandb_entity == "phamdinhanhduy-university-of-information-and-technology"
 
 
 def test_val_fraction_accepts_new_and_legacy_flag_names():
