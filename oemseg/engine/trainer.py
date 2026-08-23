@@ -24,8 +24,9 @@ from oemseg.losses.registry import build_loss
 from oemseg.metrics.segmentation import flatten_metrics
 from oemseg.models.registry import build_model
 from oemseg.optimizers.factory import build_optimizer
-from oemseg.schedulers.factory import build_scheduler, should_evaluate
+from oemseg.schedulers.factory import build_scheduler, evaluation_schedule, should_evaluate
 from oemseg.utils.logging import config_dict, format_log_metrics, logger_for
+from oemseg.utils.notifications import send_training_email, validate_email_settings
 from oemseg.utils.reproducibility import seed_everything
 
 
@@ -94,7 +95,22 @@ def _create_run_dir(args, accelerator: Accelerator) -> tuple[str, Path]:
     return str(run_name), Path(run_dir)
 
 
+def _log_repro_artifact(wandb, wandb_run, run_name: str, run_dir: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    artifact = wandb.Artifact(f"{run_name}-repro", type="code")
+    artifact.add_file(str(root / "train.py"), name="train.py")
+    artifact.add_file(str(root / "requirements.txt"), name="requirements.txt")
+    artifact.add_file(str(run_dir / "config.json"), name="config.json")
+    artifact.add_dir(str(root / "oemseg"), name="oemseg")
+    artifact.add_dir(str(root / "scripts"), name="scripts")
+    notebook = root / "notebooks/kaggle_multi_gpu.ipynb"
+    if notebook.exists():
+        artifact.add_file(str(notebook), name="notebooks/kaggle_multi_gpu.ipynb")
+    wandb_run.log_artifact(artifact)
+
+
 def run_training(args) -> Path:
+    validate_email_settings(args)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accumulation,
         mixed_precision=args.mixed_precision,
@@ -159,6 +175,7 @@ def run_training(args) -> Path:
             dir=str(run_dir),
         )
         wandb.watch(accelerator.unwrap_model(model), log=None)
+        _log_repro_artifact(wandb, wandb_run, run_name, run_dir)
 
     logger.info(
         "device=%s world_size=%d model=%s variant=%s train=%d val=%d test=%d params=%d",
@@ -188,6 +205,10 @@ def run_training(args) -> Path:
 
     best_train_loss = math.inf
     best_val_miou = -math.inf
+    best_val_epoch = None
+    best_test_miou = -math.inf
+    best_test_epoch = None
+    final_test_miou = float("nan")
     stale = 0
     max_batches = 1 if args.smoke else None
     metadata = {
@@ -231,43 +252,53 @@ def run_training(args) -> Path:
                 best_train_loss = train_loss
                 save("best_train_loss.pt", epoch)
 
-            run_evaluation = args.smoke or should_evaluate(
-                epoch,
-                epochs,
-                args.eval_start_fraction,
-                args.eval_every,
-            )
-            if run_evaluation:
-                new_best_val = False
-                if loaders.internal_val is not None:
-                    val_result = evaluate(
-                        model,
-                        loaders.internal_val,
-                        criterion,
-                        accelerator,
-                        args.tta_scales,
-                        not args.no_tta_flips,
-                        max_batches,
-                        channels_last=args.channels_last,
-                    )
-                    val_record = flatten_metrics("val", val_result.loss, val_result.metrics)
-                    record.update(val_record)
-                    logger.info("epoch: %d %s", epoch, format_log_metrics(val_record))
-                    best_val_miou, stale, new_best_val = update_validation_state(
-                        val_result.metrics.miou, best_val_miou, stale
-                    )
-                    if new_best_val:
-                        save("best_val_miou.pt", epoch)
-                    if accelerator.is_main_process:
-                        write_error_analysis(
-                            run_dir,
-                            epoch,
-                            "val",
-                            val_result.samples,
-                            args.bad_predict_top_n,
-                            new_best_val,
-                        )
+            if args.smoke:
+                run_validation = run_test = True
+            elif args.eval_start_fraction is not None:
+                run_validation = run_test = should_evaluate(
+                    epoch, epochs, args.eval_start_fraction, args.eval_every
+                )
+            else:
+                run_validation, run_test = evaluation_schedule(
+                    epoch,
+                    epochs,
+                    args.eval_start_epoch,
+                    args.eval_every,
+                    args.test_every_validations,
+                )
 
+            new_best_val = False
+            if run_validation and loaders.internal_val is not None:
+                val_result = evaluate(
+                    model,
+                    loaders.internal_val,
+                    criterion,
+                    accelerator,
+                    args.tta_scales,
+                    not args.no_tta_flips,
+                    max_batches,
+                    channels_last=args.channels_last,
+                )
+                val_record = flatten_metrics("val", val_result.loss, val_result.metrics)
+                record.update(val_record)
+                logger.info("epoch: %d %s", epoch, format_log_metrics(val_record))
+                best_val_miou, stale, new_best_val = update_validation_state(
+                    val_result.metrics.miou, best_val_miou, stale
+                )
+                if new_best_val:
+                    best_val_epoch = epoch
+                    save("best_val_miou.pt", epoch)
+                if accelerator.is_main_process:
+                    write_error_analysis(
+                        run_dir,
+                        epoch,
+                        "val",
+                        val_result.samples,
+                        args.bad_predict_top_n,
+                        new_best_val,
+                    )
+
+            if run_test:
                 test_result = evaluate(
                     model,
                     loaders.test,
@@ -281,6 +312,10 @@ def run_training(args) -> Path:
                 test_record = flatten_metrics("test", test_result.loss, test_result.metrics)
                 record.update(test_record)
                 logger.info("epoch: %d %s", epoch, format_log_metrics(test_record))
+                final_test_miou = test_result.metrics.miou
+                if final_test_miou > best_test_miou:
+                    best_test_miou = final_test_miou
+                    best_test_epoch = epoch
                 if accelerator.is_main_process:
                     write_error_analysis(
                         run_dir,
@@ -300,7 +335,33 @@ def run_training(args) -> Path:
                 logger.info("early_stop epoch: %d patience: %d", epoch, args.patience)
                 break
 
+    if accelerator.is_main_process and args.notify_email:
+        try:
+            send_training_email(
+                args,
+                {
+                    "run_name": run_name,
+                    "best_val_epoch": best_val_epoch,
+                    "best_val_miou": best_val_miou,
+                    "best_test_epoch": best_test_epoch,
+                    "best_test_miou": best_test_miou,
+                    "final_test_miou": final_test_miou,
+                    "output": str(run_dir),
+                },
+            )
+        except Exception:
+            logger.exception("email notification failed")
+
     if wandb_run:
+        wandb_run.summary.update(
+            {
+                "best_val_miou": best_val_miou,
+                "best_val_epoch": best_val_epoch,
+                "best_test_miou_observed": best_test_miou,
+                "best_test_epoch_observed": best_test_epoch,
+                "final_test_miou": final_test_miou,
+            }
+        )
         wandb_run.finish()
     accelerator.wait_for_everyone()
     logger.info("run_complete output: %s", run_dir)
