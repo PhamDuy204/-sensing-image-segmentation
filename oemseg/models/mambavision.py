@@ -60,6 +60,9 @@ class MambaVisionAdapter(SegmentationModelAdapter):
         if decoder.lower() != "upernet":
             raise ValueError("MambaVision currently supports decoder: upernet")
         self._backbone = backbone if backbone is not None else _official_backbone(pretrained)
+        for name, parameter in self._backbone.named_parameters():
+            if name.startswith(("model.norm.", "model.head.")):
+                parameter.requires_grad_(False)
         self.head = UPerNetHead(
             MAMBAVISION_CHANNELS,
             channels=decoder_channels,
