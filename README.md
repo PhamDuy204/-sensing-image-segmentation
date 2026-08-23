@@ -44,16 +44,10 @@ The script:
 
 1. verifies that the existing PyTorch build can see CUDA,
 2. installs normal project dependencies,
-3. installs the pinned `mamba-ssm==2.2.6.post3` separately with `--no-build-isolation`, and
-4. verifies imports/versions after setup.
+3. detects the current Python/PyTorch/CUDA/CXX11-ABI stack and installs the matching prebuilt `mamba-ssm==2.3.2.post1` wheel directly from the official Mamba GitHub release, refusing to fall back to a long source compilation, and
+4. verifies imports plus a real CUDA `selective_scan_fn` smoke test.
 
-`MAX_JOBS` can be used to limit Mamba compilation parallelism on memory-constrained machines:
-
-```bash
-MAX_JOBS=2 bash scripts/setup_env.sh
-```
-
-The project has been developed around CUDA-enabled PyTorch and these pinned/limited dependencies: `transformers==4.50.0`, `timm==1.0.15`, `einops==0.8.1`, and `mamba-ssm==2.2.6.post3`.
+The verified Kaggle 2x T4 environment uses Python 3.12, PyTorch 2.10.0+cu128, CUDA 12.8, CXX11 ABI enabled, and the `cu12torch2.10cxx11abiTRUE-cp312` Mamba wheel. The project otherwise keeps the existing pinned/limited dependencies such as `transformers==4.50.0`, `timm==1.0.15`, and `einops==0.8.1`.
 
 ## Dataset
 
