@@ -58,6 +58,14 @@ def test_launcher_validates_gpu_model_counts_and_builds_commands():
     assert command[-4:] == ["--model", "mambavision", "--epochs", "1"]
 
 
+def test_setup_env_uses_prebuilt_mamba_wheel_without_source_fallback():
+    setup = (ROOT / "scripts/setup_env.sh").read_text()
+    assert "releases/download/v${MAMBA_VERSION}" in setup
+    assert "mamba_ssm-${MAMBA_VERSION}+${MAMBA_TAG}" in setup
+    assert 'pip install --no-deps "$MAMBA_WHEEL_URL"' in setup
+    assert "MAMBA_FORCE_BUILD" not in setup
+
+
 def test_email_uses_password_env_and_smtp():
     notifications = load(ROOT / "oemseg/utils/notifications.py", "oem_notifications")
     args = SimpleNamespace(
