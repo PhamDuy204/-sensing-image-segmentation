@@ -4,7 +4,7 @@ from oemseg.config import parse_args
 from oemseg.models.registry import available_models, normalize_name
 
 
-def test_default_cli_preserves_unetpp_behavior():
+def test_default_cli_preserves_training_behavior_with_staged_evaluation():
     args = parse_args([])
     assert args.model == "unetpp"
     assert args.model_variant == "resnet18"
@@ -13,8 +13,10 @@ def test_default_cli_preserves_unetpp_behavior():
     assert args.epochs == 45
     assert args.grad_accumulation == 1
     assert args.internal_val_fraction == 0.1
-    assert args.eval_start_fraction == 0.0
+    assert args.eval_start_epoch == 30
+    assert args.eval_start_fraction is None
     assert args.eval_every == 1
+    assert args.test_every_validations == 3
     assert args.bad_predict_top_n == 30
     assert args.mixed_precision == "fp16"
     assert args.channels_last is False
