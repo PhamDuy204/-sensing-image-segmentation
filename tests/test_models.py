@@ -87,3 +87,34 @@ def test_mambavision_adapter_contract_with_fake_backbone():
     groups = model.parameter_groups(base_lr=6e-4, backbone_lr=6e-5)
     ids = [{id(p) for p in group["params"]} for group in groups]
     assert ids[0] and ids[1] and ids[0].isdisjoint(ids[1])
+
+
+def test_unetformer_adapter_contract_with_fake_upstream():
+    from torch import nn
+    from oemseg.models.unetformer import UNetFormerAdapter
+
+    class FakeUNetFormer(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = nn.Conv2d(3, 8, 3, padding=1)
+            self.decoder = nn.Module()
+            self.decoder.head = nn.Conv2d(8, 9, 1)
+            self.decoder.aux_head = nn.Conv2d(8, 9, 1)
+
+        def forward(self, images):
+            features = self.backbone(images)
+            logits = self.decoder.head(features)
+            if self.training:
+                return logits, self.decoder.aux_head(features)
+            return logits
+
+    model = UNetFormerAdapter(model=FakeUNetFormer())
+    model.train()
+    logits = model(torch.randn(1, 3, 64, 64))
+    assert logits.shape == (1, 9, 64, 64)
+    assert all(not parameter.requires_grad for parameter in model.model.decoder.aux_head.parameters())
+    logits.mean().backward()
+    assert all(parameter.grad is not None for parameter in model.parameters() if parameter.requires_grad)
+    groups = model.parameter_groups(base_lr=6e-4, backbone_lr=6e-5)
+    ids = [{id(p) for p in group["params"]} for group in groups]
+    assert ids[0] and ids[1] and ids[0].isdisjoint(ids[1])

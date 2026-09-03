@@ -11,25 +11,13 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw
 
+from oemseg.constants import CLASS_COLORS, CLASS_NAMES
 from oemseg.data.dataset import OEMDataset
 from oemseg.utils.tta import model_logits
 
 IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-MASK_PALETTE = np.asarray(
-    [
-        (0, 0, 0),
-        (210, 180, 140),
-        (144, 238, 144),
-        (128, 128, 128),
-        (220, 20, 60),
-        (0, 100, 0),
-        (30, 144, 255),
-        (255, 215, 0),
-        (186, 85, 211),
-    ],
-    dtype=np.uint8,
-)
+MASK_PALETTE = np.asarray(CLASS_COLORS, dtype=np.uint8)
 
 
 def read_bad_prediction_names(path: Path) -> list[str]:
@@ -83,6 +71,20 @@ def _mask_image(mask: torch.Tensor | np.ndarray) -> Image.Image:
     if array.size and (array.min() < 0 or array.max() >= len(MASK_PALETTE)):
         raise ValueError("mask contains class IDs outside the visualization palette")
     return Image.fromarray(MASK_PALETTE[array])
+
+
+def render_label_legend(path: Path) -> Path:
+    """Write one RGB legend image for the OpenEarthMap class palette."""
+    row_height, swatch, width = 30, 22, 260
+    image = Image.new("RGB", (width, row_height * len(CLASS_NAMES)), "white")
+    draw = ImageDraw.Draw(image)
+    for index, (name, color) in enumerate(zip(CLASS_NAMES, CLASS_COLORS, strict=True)):
+        y = index * row_height
+        draw.rectangle((6, y + 4, 6 + swatch, y + 4 + swatch), fill=color, outline="black")
+        draw.text((38, y + 8), f"{index}: {name}", fill="black")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+    return path
 
 
 def _compose_split_grid(

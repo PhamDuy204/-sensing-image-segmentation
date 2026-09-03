@@ -26,3 +26,24 @@ def test_read_bad_prediction_names_handles_missing_file_and_reads_tsv(tmp_path):
         "b.png\tx\t1\t0\t0\ttree\t0\n"
     )
     assert read_bad_prediction_names(path) == ["a.png", "b.png"]
+
+
+def test_openearthmap_palette_converts_single_channel_mask_to_rgb_and_legend(tmp_path):
+    import numpy as np
+    from PIL import Image
+    from oemseg.constants import CLASS_COLORS, CLASS_NAMES
+    from oemseg.utils.visualization import _mask_image, render_label_legend
+
+    mask = np.array([[0, 2], [4, 8]], dtype=np.uint8)
+    rgb = _mask_image(mask)
+    assert rgb.mode == "RGB"
+    assert np.asarray(rgb).shape == (2, 2, 3)
+    assert tuple(np.asarray(rgb)[0, 0]) == (0, 0, 0)
+    assert tuple(np.asarray(rgb)[0, 1]) == (0, 255, 36)
+    assert tuple(np.asarray(rgb)[1, 0]) == (255, 255, 255)
+    assert tuple(np.asarray(rgb)[1, 1]) == (222, 31, 7)
+
+    path = render_label_legend(tmp_path / "legend.png")
+    legend = Image.open(path)
+    assert legend.mode == "RGB"
+    assert len(CLASS_COLORS) == len(CLASS_NAMES) == 9

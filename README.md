@@ -21,6 +21,7 @@ OEM_Segmentation/
 │   └── utils/                  # logging, seeding, TTA, notifications
 ├── scripts/
 │   ├── setup_env.sh            # reproducible CUDA/Python environment setup
+│   ├── setup_unetformer.sh     # pin upstream GeoSeg UNetFormer source
 │   ├── launch.py               # N-GPU launcher
 │   └── setup_dataset.sh        # reproducible OEM dataset bootstrap
 ├── notebooks/
@@ -42,10 +43,13 @@ bash scripts/setup_env.sh
 
 The script:
 
-1. verifies that the existing PyTorch build can see CUDA,
-2. installs normal project dependencies,
-3. detects the current Python/PyTorch/CUDA/CXX11-ABI stack and installs the matching prebuilt `mamba-ssm==2.3.2.post1` wheel directly from the official Mamba GitHub release, refusing to fall back to a long source compilation, and
-4. verifies imports plus a real CUDA `selective_scan_fn` smoke test.
+1. pins the upstream GeoSeg source used by the UNetFormer adapter under gitignored `.vendor/GeoSeg`,
+2. verifies that the existing PyTorch build can see CUDA,
+3. installs normal project dependencies,
+4. detects the current Python/PyTorch/CUDA/CXX11-ABI stack and installs the matching prebuilt `mamba-ssm==2.3.2.post1` wheel directly from the official Mamba GitHub release, refusing to fall back to a long source compilation, and
+5. verifies imports plus a real CUDA `selective_scan_fn` smoke test.
+
+If the Python environment is already prepared and only UNetFormer source is missing, run `bash scripts/setup_unetformer.sh`. The adapter pins GeoSeg commit `9453fe48209c4626b29e35e61bab93b61212c4b1` instead of copying the model architecture into this repository.
 
 The verified Kaggle 2x T4 environment uses Python 3.12, PyTorch 2.10.0+cu128, CUDA 12.8, CXX11 ABI enabled, and the `cu12torch2.10cxx11abiTRUE-cp312` Mamba wheel. The project otherwise keeps the existing pinned/limited dependencies such as `transformers==4.50.0`, `timm==1.0.15`, and `einops==0.8.1`.
 
@@ -82,7 +86,7 @@ Split interpretation used by this project:
 
 | Component | CLI names |
 |---|---|
-| Model | `unet`, `unetpp`, `segformer`, `mambavision` |
+| Model | `unet`, `unetpp`, `unetformer`, `segformer`, `mambavision` |
 | Loss | `ce`, `dice`, `ce_dice` |
 | Optimizer | `adam`, `adamw` |
 | MambaVision decoder | `upernet` |
@@ -100,6 +104,10 @@ Examples:
 ```bash
 # U-Net
 python train.py --model unet --model-variant resnet18
+
+# UNetFormer / ResNet18 from pinned upstream GeoSeg
+bash scripts/setup_unetformer.sh
+python train.py --model unetformer --model-variant resnet18
 
 # SegFormer-B0
 python train.py --model segformer --model-variant b0
@@ -144,7 +152,18 @@ Equivalent defaults:
 
 `--eval-start-epoch 30` means **30 complete train-only epochs**; validation starts at epoch 31. Every third validation also evaluates the reported test split. The final configured epoch always runs both validation and test even if it does not land on the normal interval.
 
-Model selection remains validation-only: `best_val_miou.pt` is selected from internal-validation mIoU. Reported `test_*` metrics never select a checkpoint or drive early stopping.
+Checkpoint selection has two modes, both using the same trainer:
+
+```bash
+# Validation mode: 80% train / 20% internal validation; fixed reported test remains unchanged.
+python train.py --val-fraction 0.2
+
+# No-validation mode: all 3000 official-train images train the model.
+# The selected checkpoint is the minimum training-loss checkpoint.
+python train.py --val-fraction 0 --patience 20
+```
+
+With `--val-fraction > 0`, `best_val_miou.pt` is selected by internal-validation mIoU and `--patience` counts validation evaluations without improvement. With `--val-fraction 0`, `best_train_loss.pt` is selected by minimum training loss and `--patience` counts consecutive training epochs without a new minimum. `--patience 0` disables early stopping in either mode. The reported `test_*` metrics never select a checkpoint or drive early stopping.
 
 The older fraction-based behavior remains available explicitly for compatibility. When `--eval-start-fraction` is supplied, validation and test run together using that legacy schedule.
 
@@ -220,7 +239,14 @@ python train.py --wandb --wandb-project oem-segmentation
 python train.py --wandb --wandb-mode offline --smoke
 ```
 
-When W&B is enabled, each run logs metrics plus a reproducibility artifact containing the actual training entry point, run `config.json`, requirements, `oemseg/` source (models/data/losses/trainer/etc.), scripts, and Kaggle launcher notebook. This keeps the code/config used by an experiment attached to the run rather than relying on the current repository state months later.
+When W&B is enabled, each run logs epoch metrics plus two artifacts:
+
+- a reproducibility artifact containing the actual training entry point, run `config.json`, requirements, `oemseg/` source, scripts, and Kaggle launcher notebook;
+- a `model` artifact containing the **selected checkpoint**, `best_checkpoint_summary.json`, complete selected-checkpoint per-sample score tables, and below-mean error-analysis TSVs. Validation mode contains both `below_mean_val.tsv` and `below_mean_test.tsv`; no-validation mode contains test analysis only.
+
+The W&B Summary records `best/epoch`, `best/selection_mode`, `best/selection_metric`, selected-checkpoint train loss, and the complete selected-checkpoint validation/test metric set when applicable: loss, OA, mIoU, macro F1/precision/recall, and per-class IoU/F1/precision/recall. Test metrics stay informational and never choose weights.
+
+Best-checkpoint qualitative panels convert the single-channel class-ID target/prediction masks to RGB using the OpenEarthMap class palette before logging. W&B also receives `best_checkpoint/legend`, which maps all nine IDs/colors (`background`, `bareland`, `rangeland`, `developed`, `road`, `tree`, `water`, `agriculture`, `building`). The same legend and rendered grids are stored under the run's `visualizations/` directory and included in the model artifact.
 
 ## End-of-run email
 
@@ -251,15 +277,21 @@ metrics.jsonl
 sample_scores.jsonl
 bad_predictions_val.tsv
 bad_predictions_test.tsv
-bad_predictions_val_best.tsv
-bad_predictions_test_at_best_val.tsv
+bad_predictions_val_best.tsv              # validation mode only
+bad_predictions_test_at_best_val.tsv       # validation mode when sampled during training
+best_checkpoint_summary.json
+best_checkpoint_val_scores.tsv             # validation mode only
+best_checkpoint_test_scores.tsv
+below_mean_val.tsv                         # validation mode only; selected checkpoint
+below_mean_test.tsv                        # selected checkpoint
+visualizations/{legend,best_*_examples}.png # when W&B visualization runs
 splits/{train,val,test}.txt
 last.pt
 best_train_loss.pt
-best_val_miou.pt
+best_val_miou.pt                           # validation mode only
 ```
 
-`sample_scores.jsonl` stores compact filename/region/loss/OA/mIoU/worst-class metadata rather than image tensors. The TSV files keep the worst samples for failure analysis.
+`sample_scores.jsonl` stores compact filename/region/loss/OA/mIoU/worst-class metadata rather than image tensors. `below_mean_<split>.tsv` is the selected-checkpoint error analysis: every listed sample has sample mIoU below that split's mean sample mIoU. `best_checkpoint_summary.json` contains the complete selected-checkpoint metric dictionaries, including all per-class metrics.
 
 ## Verification
 
@@ -282,6 +314,20 @@ python train.py \
 ```
 
 The same `--smoke` arguments can be forwarded through either N-GPU launch mode for Kaggle verification.
+
+
+A real one-epoch no-validation W&B verification run (epoch 1 must be selected) is:
+
+```bash
+python train.py \
+  --model unet \
+  --epochs 1 \
+  --val-fraction 0 \
+  --wandb \
+  --tta-scales 1.0 \
+  --no-tta-flips
+```
+
 
 ## Extending the framework
 

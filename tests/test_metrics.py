@@ -31,3 +31,14 @@ def test_batch_confusion_matrices_preserve_each_sample():
     assert matrices.shape == (2, 2, 2)
     assert matrices[0].tolist() == [[1, 0], [0, 1]]
     assert matrices[1].tolist() == [[0, 0], [1, 1]]
+
+
+def test_flatten_metrics_includes_per_class_precision_recall_f1_and_iou():
+    target = torch.tensor([[[0, 1], [1, 1]]])
+    prediction = torch.tensor([[[0, 1], [0, 1]]])
+    matrix = ConfusionMatrix(classes=2)
+    matrix.update(prediction, target)
+    flattened = flatten_metrics("test", 0.5, matrix.compute())
+    for metric in ("iou", "f1", "precision", "recall"):
+        assert f"test_{metric}_background" in flattened
+        assert f"test_{metric}_bareland" in flattened

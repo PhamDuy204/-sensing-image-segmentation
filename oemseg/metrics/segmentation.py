@@ -18,6 +18,9 @@ class SegmentationMetrics:
     precision: float
     recall: float
     per_class_iou: dict[str, float]
+    per_class_f1: dict[str, float]
+    per_class_precision: dict[str, float]
+    per_class_recall: dict[str, float]
 
 
 def confusion_matrix_tensor(prediction: Tensor, target: Tensor, classes: int = NUM_CLASSES) -> Tensor:
@@ -58,14 +61,19 @@ def metrics_from_matrix(matrix: Tensor) -> SegmentationMetrics:
     def mean(values: Tensor) -> float:
         return float(torch.nanmean(values).item())
 
-    names = CLASS_NAMES[: matrix.shape[0]]
+    def by_class(values: Tensor) -> dict[str, float]:
+        return {name: float(value) for name, value in zip(CLASS_NAMES[: matrix.shape[0]], values.tolist())}
+
     return SegmentationMetrics(
         oa=float((tp.sum() / cm.sum().clamp_min(1)).item()),
         miou=mean(iou),
         f1=mean(f1),
         precision=mean(precision),
         recall=mean(recall),
-        per_class_iou={name: float(value) for name, value in zip(names, iou.tolist())},
+        per_class_iou=by_class(iou),
+        per_class_f1=by_class(f1),
+        per_class_precision=by_class(precision),
+        per_class_recall=by_class(recall),
     )
 
 
@@ -85,13 +93,15 @@ class ConfusionMatrix:
 
 
 def flatten_metrics(prefix: str, loss: float, metrics: SegmentationMetrics) -> dict[str, float]:
+    values = asdict(metrics)
     result = {f"{prefix}_loss": loss}
-    result.update(
-        {
-            f"{prefix}_{key}": value
-            for key, value in asdict(metrics).items()
-            if key != "per_class_iou"
-        }
-    )
-    result.update({f"{prefix}_iou_{key}": value for key, value in metrics.per_class_iou.items()})
+    for key in ("oa", "miou", "f1", "precision", "recall"):
+        result[f"{prefix}_{key}"] = values[key]
+    for metric in ("iou", "f1", "precision", "recall"):
+        result.update(
+            {
+                f"{prefix}_{metric}_{class_name}": value
+                for class_name, value in values[f"per_class_{metric}"].items()
+            }
+        )
     return result

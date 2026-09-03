@@ -54,3 +54,9 @@ def test_invalid_gradient_accumulation_is_rejected():
 
 def test_channels_last_is_opt_in():
     assert parse_args(["--channels-last"]).channels_last is True
+
+
+def test_unetformer_is_registered_with_resnet18_default():
+    assert "unetformer" in available_models()
+    args = parse_args(["--model", "unetformer", "--no-pretrained"])
+    assert args.model_variant == "resnet18"

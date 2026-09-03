@@ -12,6 +12,7 @@ OPTIMIZER_NAMES = ("adam", "adamw")
 MODEL_DEFAULT_VARIANTS = {
     "unet": "resnet18",
     "unetpp": "resnet18",
+    "unetformer": "resnet18",
     "segformer": "b0",
     "mambavision": "tiny",
 }
@@ -58,7 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-tta-flips", action="store_true")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--val-fraction", "--internal-val-fraction", dest="internal_val_fraction", type=float, default=0.1)
+    parser.add_argument(
+        "--val-fraction", "--internal-val-fraction", dest="internal_val_fraction", type=float, default=0.1,
+        help="fraction of official train used for internal validation; 0 selects checkpoints by train loss",
+    )
     parser.add_argument("--patience", type=int, default=0)
     parser.add_argument("--bad-predict-top-n", type=int, default=30)
     parser.add_argument("--grad-accumulation", type=int, default=1)

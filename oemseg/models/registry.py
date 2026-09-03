@@ -12,6 +12,7 @@ Builder = Callable[[str, bool, str, int], SegmentationModelAdapter]
 _REGISTRY: dict[str, Builder | None] = {
     "unet": None,
     "unetpp": None,
+    "unetformer": None,
     "segformer": None,
     "mambavision": None,
 }
@@ -52,6 +53,8 @@ def _load_builder(name: str) -> Builder:
             from oemseg.models import unet  # noqa: F401
         elif key == "unetpp":
             from oemseg.models import unetpp  # noqa: F401
+        elif key == "unetformer":
+            from oemseg.models import unetformer  # noqa: F401
         elif key == "segformer":
             from oemseg.models import segformer  # noqa: F401
         elif key == "mambavision":
