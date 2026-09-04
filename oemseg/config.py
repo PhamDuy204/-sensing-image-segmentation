@@ -15,6 +15,7 @@ MODEL_DEFAULT_VARIANTS = {
     "unetformer": "resnet18",
     "segformer": "b0",
     "mambavision": "tiny",
+    "pyramidmamba": "swin_base_patch4_window12_384.ms_in22k_ft_in1k",
 }
 
 

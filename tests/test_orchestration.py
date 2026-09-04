@@ -97,3 +97,14 @@ def test_email_uses_password_env_and_smtp():
     message = client.send_message.call_args.args[0]
     assert message["To"] == "dest@example.com"
     assert "best val mIoU: 0.720000 (epoch 40)" in message.get_content()
+
+
+def test_readme_documents_q1_paper_models_and_protocol_boundaries():
+    readme = (ROOT / "README.md").read_text()
+    for name in ("PyramidMamba", "GeoSA-BaSA", "HG-RSOVSSeg", "RepSTDC"):
+        assert name in readme
+    assert "python scripts/paper_models.py setup all" in readme
+    assert "python train.py --model pyramidmamba" in readme
+    assert "repstdc-ca_512x512_80k_oem.py" in readme
+    assert "official upstream protocol" in readme.lower()
+    assert "not directly comparable" in readme.lower()

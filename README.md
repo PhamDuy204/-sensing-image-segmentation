@@ -86,7 +86,7 @@ Split interpretation used by this project:
 
 | Component | CLI names |
 |---|---|
-| Model | `unet`, `unetpp`, `unetformer`, `segformer`, `mambavision` |
+| Model | `unet`, `unetpp`, `unetformer`, `segformer`, `mambavision`, `pyramidmamba` |
 | Loss | `ce`, `dice`, `ce_dice` |
 | Optimizer | `adam`, `adamw` |
 | MambaVision decoder | `upernet` |
@@ -108,6 +108,10 @@ python train.py --model unet --model-variant resnet18
 # UNetFormer / ResNet18 from pinned upstream GeoSeg
 bash scripts/setup_unetformer.sh
 python train.py --model unetformer --model-variant resnet18
+
+# PyramidMamba from the same pinned upstream GeoSeg checkout
+bash scripts/setup_unetformer.sh
+python train.py --model pyramidmamba --model-variant swin_base_patch4_window12_384.ms_in22k_ft_in1k
 
 # SegFormer-B0
 python train.py --model segformer --model-variant b0
@@ -213,6 +217,35 @@ python scripts/launch.py parallel --gpus 0,1 --models unetpp,segformer --dry-run
 ```
 
 The Kaggle notebook uses the same launcher rather than maintaining a second training implementation.
+
+## Official Q1-paper sidecars
+
+PyramidMamba fits the local adapter contract, so it uses the same OpenEarthMap split, 9-class logits, losses, W&B logging, checkpointing, and evaluator as the other native models. The existing `scripts/setup_unetformer.sh` checkout is intentionally shared because the pinned GeoSeg revision contains both UNetFormer and PyramidMamba.
+
+GeoSA-BaSA, HG-RSOVSSeg, and RepSTDC retain their **official upstream protocol** instead of being rewritten into the local trainer. Their code is cloned only into gitignored `.vendor/` directories at exact commits; no third-party architecture source is copied into this repository and their older/different OpenMMLab dependencies are not added to the main `requirements.txt`.
+
+```bash
+# Clone all three official repositories at their exact pinned revisions.
+python scripts/paper_models.py setup all
+
+# Inspect commands without starting a job.
+python scripts/paper_models.py train geosa_basa --dry-run
+python scripts/paper_models.py train hg_rsovsseg --dry-run
+python scripts/paper_models.py train repstdc --dry-run
+
+# RepSTDC's official direct-OpenEarthMap config.
+python scripts/paper_models.py train repstdc --dry-run -- --work-dir runs/repstdc
+# config/repstdc/repstdc-ca_512x512_80k_oem.py
+
+# Evaluation examples; replace the checkpoint paths with real files.
+python scripts/paper_models.py eval geosa_basa --checkpoint checkpoints/whumix_dinov2_geosa_basa.pth --dry-run
+python scripts/paper_models.py eval hg_rsovsseg --checkpoint result/HG-RSOVSSeg/OpenEarthMap/iter_80000.pth --dry-run
+python scripts/paper_models.py eval repstdc --checkpoint work_dir/repstdc/latest.pth --dry-run
+```
+
+The wrapper deliberately does not hide dataset conversion. GeoSA-BaSA expects its official preprocessing step, for example `python tools/convert_datasets/preprocess_oem.py --oem-root /path/to/oem`; HG-RSOVSSeg expects its documented `data/OpenEarthMap_512` layout; RepSTDC uses its own MMSegmentation dataset/config layout. Reuse or symlink the project's OEM files where compatible rather than duplicating them.
+
+These sidecar results are **not directly comparable** to the local closed-set 1024×1024 benchmark unless you deliberately align the protocol. GeoSA-BaSA is a domain-generalization experiment, HG-RSOVSSeg is open-vocabulary/cross-dataset segmentation, and RepSTDC's published OEM recipe is a 512×512 real-time MMSegmentation setup. Keep their official settings when reproducing the papers; use PyramidMamba through `train.py` when you need an apples-to-apples local-model comparison.
 
 ## Throughput settings
 

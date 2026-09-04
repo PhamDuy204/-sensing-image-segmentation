@@ -7,7 +7,8 @@ Add four recent OpenEarthMap paper implementations to the existing OEM research 
 - PyramidMamba (GeoSeg): native project adapter because the already-pinned GeoSeg source contains the model and fits the existing `images -> logits` contract.
 - GeoSA-BaSA: official upstream sidecar runner, pinned at `67cec152349db6b29bf14e991e80f01fd365f73c`.
 - HG-RSOVSSeg: official upstream sidecar runner, pinned at `58e1df1f68f15920e02320dc54fe7441acf37770`.
-- RepSTDC: official upstream sidecar runner, pinned at `b4b9f5973c7e1162b2354025042a839f59c0ca8d`.
+- RepSTDC: official upstream sidecar runner, pinned at `549c2e0cf81963aeae8e5c6b9c83a3aa496a8407`.
+  This official historical revision is intentional: it contains the same CA OpenEarthMap config as the current upstream head while still retaining the referenced `config/_base_` files, so the published config is self-contained.
 
 GeoSeg remains pinned at the project's existing revision `9453fe48209c4626b29e35e61bab93b61212c4b1` so UNetFormer and PyramidMamba share one upstream checkout.
 

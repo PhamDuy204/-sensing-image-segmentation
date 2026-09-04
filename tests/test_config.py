@@ -60,3 +60,11 @@ def test_unetformer_is_registered_with_resnet18_default():
     assert "unetformer" in available_models()
     args = parse_args(["--model", "unetformer", "--no-pretrained"])
     assert args.model_variant == "resnet18"
+
+
+def test_pyramidmamba_is_registered_with_published_swin_default():
+    assert "pyramidmamba" in available_models()
+    args = parse_args(["--model", "pyramid-mamba", "--no-pretrained"])
+    assert args.model == "pyramidmamba"
+    assert args.model_variant == "swin_base_patch4_window12_384.ms_in22k_ft_in1k"
+    assert args.pretrained is False

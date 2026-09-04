@@ -15,11 +15,13 @@ _REGISTRY: dict[str, Builder | None] = {
     "unetformer": None,
     "segformer": None,
     "mambavision": None,
+    "pyramidmamba": None,
 }
 _ALIASES = {
     "unetplusplus": "unetpp",
     "unet_plus_plus": "unetpp",
     "mamba_vision": "mambavision",
+    "pyramid_mamba": "pyramidmamba",
 }
 
 
@@ -59,6 +61,8 @@ def _load_builder(name: str) -> Builder:
             from oemseg.models import segformer  # noqa: F401
         elif key == "mambavision":
             from oemseg.models import mambavision  # noqa: F401
+        elif key == "pyramidmamba":
+            from oemseg.models import pyramidmamba  # noqa: F401
     builder = _REGISTRY[key]
     if builder is None:
         raise RuntimeError(f"Model '{key}' failed to register")

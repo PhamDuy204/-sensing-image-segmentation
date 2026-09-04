@@ -118,3 +118,26 @@ def test_unetformer_adapter_contract_with_fake_upstream():
     groups = model.parameter_groups(base_lr=6e-4, backbone_lr=6e-5)
     ids = [{id(p) for p in group["params"]} for group in groups]
     assert ids[0] and ids[1] and ids[0].isdisjoint(ids[1])
+
+
+def test_pyramidmamba_adapter_contract_with_fake_upstream():
+    from torch import nn
+    from oemseg.models.pyramidmamba import PyramidMambaAdapter
+
+    class FakePyramidMamba(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = nn.Conv2d(3, 8, 3, padding=1)
+            self.decoder = nn.Conv2d(8, 9, 1)
+
+        def forward(self, images):
+            return self.decoder(self.backbone(images))[:, :, ::2, ::2]
+
+    model = PyramidMambaAdapter(model=FakePyramidMamba())
+    x = torch.randn(1, 3, 64, 64)
+    logits = model(x)
+    assert logits.shape == (1, 9, 64, 64)
+    logits.mean().backward()
+    groups = model.parameter_groups(base_lr=6e-4, backbone_lr=6e-5)
+    ids = [{id(p) for p in group["params"]} for group in groups]
+    assert ids[0] and ids[1] and ids[0].isdisjoint(ids[1])
