@@ -150,3 +150,38 @@ def test_flatten_best_metrics_keeps_all_selected_test_scores():
         "best/test_recall_background",
     ):
         assert key in summary
+
+
+def test_train_one_epoch_can_use_model_native_loss_without_calling_shared_criterion():
+    class NativeLossModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = torch.nn.Conv2d(3, 9, 1)
+
+        def forward(self, images, targets=None):
+            logits = self.conv(images)
+            if targets is None:
+                return logits
+            return torch.nn.functional.cross_entropy(logits, targets)
+
+    class ForbiddenCriterion(torch.nn.Module):
+        def forward(self, logits, targets):
+            raise AssertionError("shared criterion must not be called for native-loss models")
+
+    accelerator = Accelerator(cpu=True)
+    model = NativeLossModel()
+    loader = DataLoader(
+        TensorDataset(torch.randn(1, 3, 8, 8), torch.randint(0, 9, (1, 8, 8))),
+        batch_size=1,
+    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    model, optimizer, loader = accelerator.prepare(model, optimizer, loader)
+    loss = train_one_epoch(
+        model=model,
+        loader=loader,
+        criterion=ForbiddenCriterion(),
+        optimizer=optimizer,
+        accelerator=accelerator,
+        native_loss=True,
+    )
+    assert loss > 0

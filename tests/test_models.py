@@ -141,3 +141,92 @@ def test_pyramidmamba_adapter_contract_with_fake_upstream():
     groups = model.parameter_groups(base_lr=6e-4, backbone_lr=6e-5)
     ids = [{id(p) for p in group["params"]} for group in groups]
     assert ids[0] and ids[1] and ids[0].isdisjoint(ids[1])
+
+
+def test_segnext_adapter_contract_with_fake_openmmlab_components():
+    from torch import nn
+    from oemseg.models.segnext import SegNeXtAdapter
+
+    class FakeBackbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = nn.Conv2d(3, 8, 3, padding=1)
+
+        def forward(self, images):
+            feature = self.conv(images)
+            return (feature, feature, feature, feature)
+
+    class FakeHead(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.classifier = nn.Conv2d(8, 9, 1)
+
+        def forward(self, features):
+            return self.classifier(features[-1])[:, :, ::2, ::2]
+
+    model = SegNeXtAdapter(pretrained=False, backbone=FakeBackbone(), decode_head=FakeHead())
+    assert_adapter_contract(model)
+
+
+def test_repstdc_adapter_contract_with_fake_official_components():
+    from torch import nn
+    from oemseg.models.repstdc import RepSTDCAdapter
+
+    class FakeBackbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = nn.Conv2d(3, 8, 3, padding=1)
+
+        def forward(self, images):
+            feature = self.conv(images)
+            return (feature, feature, feature, feature)
+
+    class FakeHead(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.classifier = nn.Conv2d(8, 9, 1)
+
+        def forward(self, features):
+            return self.classifier(features[-1])[:, :, ::2, ::2]
+
+    model = RepSTDCAdapter(pretrained=False, backbone=FakeBackbone(), decode_head=FakeHead())
+    assert_adapter_contract(model)
+
+
+def test_mask2former_adapter_dense_logits_and_native_loss_with_fake_model():
+    from types import SimpleNamespace
+    from torch import nn
+    from oemseg.models.mask2former import Mask2FormerAdapter
+
+    class FakeMask2Former(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.encoder = nn.Conv2d(3, 4, 1)
+            self.mask_head = nn.Conv2d(4, 3, 1)
+            self.class_queries = nn.Parameter(torch.randn(3, 10))
+
+        def forward(self, pixel_values, mask_labels=None, class_labels=None):
+            features = self.encoder(pixel_values)
+            masks = self.mask_head(features)[:, :, ::2, ::2]
+            classes = self.class_queries.unsqueeze(0).expand(pixel_values.shape[0], -1, -1)
+            loss = None
+            if mask_labels is not None and class_labels is not None:
+                loss = masks.mean() + classes.mean()
+            return SimpleNamespace(
+                class_queries_logits=classes,
+                masks_queries_logits=masks,
+                loss=loss,
+            )
+
+    fake = FakeMask2Former()
+    model = Mask2FormerAdapter(pretrained=False, model=fake, backbone=fake.encoder)
+    x = torch.randn(1, 3, 64, 64)
+    logits = model(x)
+    assert logits.shape == (1, 9, 64, 64)
+    target = torch.randint(0, 9, (1, 64, 64))
+    loss = model(x, targets=target)
+    assert loss.ndim == 0
+    loss.backward()
+    groups = model.parameter_groups(base_lr=6e-4, backbone_lr=6e-5)
+    ids = [{id(p) for p in group["params"]} for group in groups]
+    assert ids[0] and ids[1] and ids[0].isdisjoint(ids[1])

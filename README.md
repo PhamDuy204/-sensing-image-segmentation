@@ -1,6 +1,6 @@
 # Modular OpenEarthMap semantic segmentation
 
-A compact research framework for interchangeable semantic-segmentation models on OpenEarthMap. All models share the same data pipeline, losses, optimizer/scheduler factories, evaluator, checkpointing, error analysis, W&B tracking, and single-/multi-GPU training engine.
+A compact research framework for interchangeable semantic-segmentation models on OpenEarthMap. All models share the same data split, optimizer/scheduler plumbing, evaluator, checkpointing, error analysis, W&B tracking, and single-/multi-GPU training engine. Dense-logit models use the shared CE/Dice losses; Mask2Former keeps its native Hungarian mask-classification loss.
 
 OpenEarthMap's official `train.txt` (3000 labeled images) is split deterministically into **2700 train + 300 internal validation** images by default. The public `val.txt` (500 labeled images) is treated as the reported paper **test** set. The official 1500-image benchmark test is kept only for optional submission/export because public masks are unavailable.
 
@@ -22,6 +22,7 @@ OEM_Segmentation/
 ├── scripts/
 │   ├── setup_env.sh            # reproducible CUDA/Python environment setup
 │   ├── setup_unetformer.sh     # pin upstream GeoSeg UNetFormer source
+│   ├── setup_openmmlab_baselines.sh # isolated env for SegNeXt/RepSTDC
 │   ├── launch.py               # N-GPU launcher
 │   └── setup_dataset.sh        # reproducible OEM dataset bootstrap
 ├── notebooks/
@@ -29,7 +30,7 @@ OEM_Segmentation/
 └── tests/
 ```
 
-Every model adapter returns logits shaped `[B, 9, H, W]` and exposes backbone/main parameter groups, so the trainer contains no model-specific training loop.
+Every model adapter returns evaluation logits shaped `[B, 9, H, W]` and exposes backbone/main parameter groups. Mask2Former is the one deliberate exception during optimization: its adapter asks the same trainer to use the model's native Hungarian mask-classification loss.
 
 ## Environment
 
@@ -86,7 +87,7 @@ Split interpretation used by this project:
 
 | Component | CLI names |
 |---|---|
-| Model | `unet`, `unetpp`, `unetformer`, `segformer`, `mambavision`, `pyramidmamba` |
+| Model | `unet`, `unetpp`, `unetformer`, `segformer`, `segnext`, `repstdc`, `mambavision`, `pyramidmamba`, `mask2former` |
 | Loss | `ce`, `dice`, `ce_dice` |
 | Optimizer | `adam`, `adamw` |
 | MambaVision decoder | `upernet` |
@@ -116,6 +117,14 @@ python train.py --model pyramidmamba --model-variant swin_base_patch4_window12_3
 # SegFormer-B0
 python train.py --model segformer --model-variant b0
 
+# SegNeXt-T and RepSTDC-CA reuse OpenMMLab / official RepSTDC code in an isolated env.
+bash scripts/setup_openmmlab_baselines.sh
+~/miniconda3/bin/conda run -n oem-openmmlab python train.py --model segnext --model-variant tiny
+~/miniconda3/bin/conda run -n oem-openmmlab python train.py --model repstdc --model-variant stdc1-ca
+
+# Mask2Former-Swin-Tiny reuses the existing Transformers dependency.
+python train.py --model mask2former --model-variant swin-tiny
+
 # MambaVision-T + compact UPerNet
 python train.py \
   --model mambavision \
@@ -128,6 +137,8 @@ python train.py \
 ```
 
 MambaVision uses NVIDIA's official `MambaVision-T-1K` implementation/weights through Hugging Face at the revision pinned in `oemseg/models/mambavision.py` and feeds its four feature maps into the local UPerNet decoder. Use `--no-pretrained` when weights must not be downloaded.
+
+The paper baseline order used by this repository is **U-Net → UNetFormer → SegFormer-B0 → SegNeXt-T → RepSTDC-CA → MambaVision-T → PyramidMamba → Mask2Former-Swin-Tiny → Our Model**. SegNeXt-T uses the official MSCAN-T + LightHamHead settings from MMSegmentation. RepSTDC-CA reuses the pinned official `mmseg_geo` architecture but changes only the input/output contract needed by this benchmark: RGB input and all 9 OpenEarthMap classes including background. Mask2Former keeps its own Hungarian matching/class-mask objective instead of replacing the method with dense CE+Dice.
 
 ## Default evaluation and checkpoint schedule
 
@@ -222,7 +233,7 @@ The Kaggle notebook uses the same launcher rather than maintaining a second trai
 
 PyramidMamba fits the local adapter contract, so it uses the same OpenEarthMap split, 9-class logits, losses, W&B logging, checkpointing, and evaluator as the other native models. The existing `scripts/setup_unetformer.sh` checkout is intentionally shared because the pinned GeoSeg revision contains both UNetFormer and PyramidMamba.
 
-GeoSA-BaSA, HG-RSOVSSeg, and RepSTDC retain their **official upstream protocol** instead of being rewritten into the local trainer. Their code is cloned only into gitignored `.vendor/` directories at exact commits; no third-party architecture source is copied into this repository and their older/different OpenMMLab dependencies are not added to the main `requirements.txt`.
+GeoSA-BaSA and HG-RSOVSSeg retain their **official upstream protocol** because their domain-generalization/open-vocabulary tasks are not the same closed-set experiment. RepSTDC now has two paths: `train.py --model repstdc` is the apples-to-apples 9-class baseline, while `scripts/paper_models.py train repstdc` remains the untouched official 512×512 reproduction path. OpenMMLab dependencies stay out of the main `requirements.txt` and live in the isolated `oem-openmmlab` environment.
 
 ```bash
 # Clone all three official repositories at their exact pinned revisions.
@@ -245,7 +256,7 @@ python scripts/paper_models.py eval repstdc --checkpoint work_dir/repstdc/latest
 
 The wrapper deliberately does not hide dataset conversion. GeoSA-BaSA expects its official preprocessing step, for example `python tools/convert_datasets/preprocess_oem.py --oem-root /path/to/oem`; HG-RSOVSSeg expects its documented `data/OpenEarthMap_512` layout; RepSTDC uses its own MMSegmentation dataset/config layout. Reuse or symlink the project's OEM files where compatible rather than duplicating them.
 
-These sidecar results are **not directly comparable** to the local closed-set 1024×1024 benchmark unless you deliberately align the protocol. GeoSA-BaSA is a domain-generalization experiment, HG-RSOVSSeg is open-vocabulary/cross-dataset segmentation, and RepSTDC's published OEM recipe is a 512×512 real-time MMSegmentation setup. Keep their official settings when reproducing the papers; use PyramidMamba through `train.py` when you need an apples-to-apples local-model comparison.
+These sidecar results are **not directly comparable** to the local closed-set 1024×1024 benchmark unless you deliberately align the protocol. GeoSA-BaSA is a domain-generalization experiment, HG-RSOVSSeg is open-vocabulary/cross-dataset segmentation, and RepSTDC's published OEM recipe is a 512×512 real-time MMSegmentation setup. For the paper comparison table, use the registered `train.py --model repstdc` path instead of the sidecar reproduction command.
 
 ## Throughput settings
 

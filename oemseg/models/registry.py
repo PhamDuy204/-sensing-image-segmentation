@@ -16,12 +16,18 @@ _REGISTRY: dict[str, Builder | None] = {
     "segformer": None,
     "mambavision": None,
     "pyramidmamba": None,
+    "segnext": None,
+    "repstdc": None,
+    "mask2former": None,
 }
 _ALIASES = {
     "unetplusplus": "unetpp",
     "unet_plus_plus": "unetpp",
     "mamba_vision": "mambavision",
     "pyramid_mamba": "pyramidmamba",
+    "seg_next": "segnext",
+    "rep_stdc": "repstdc",
+    "mask_2_former": "mask2former",
 }
 
 
@@ -63,6 +69,12 @@ def _load_builder(name: str) -> Builder:
             from oemseg.models import mambavision  # noqa: F401
         elif key == "pyramidmamba":
             from oemseg.models import pyramidmamba  # noqa: F401
+        elif key == "segnext":
+            from oemseg.models import segnext  # noqa: F401
+        elif key == "repstdc":
+            from oemseg.models import repstdc  # noqa: F401
+        elif key == "mask2former":
+            from oemseg.models import mask2former  # noqa: F401
     builder = _REGISTRY[key]
     if builder is None:
         raise RuntimeError(f"Model '{key}' failed to register")

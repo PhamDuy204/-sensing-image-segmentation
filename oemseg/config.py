@@ -16,6 +16,9 @@ MODEL_DEFAULT_VARIANTS = {
     "segformer": "b0",
     "mambavision": "tiny",
     "pyramidmamba": "swin_base_patch4_window12_384.ms_in22k_ft_in1k",
+    "segnext": "tiny",
+    "repstdc": "stdc1-ca",
+    "mask2former": "swin-tiny",
 }
 
 

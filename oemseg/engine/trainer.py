@@ -92,6 +92,7 @@ def train_one_epoch(
     max_batches: int | None = None,
     description: str = "train",
     channels_last: bool = False,
+    native_loss: bool = False,
 ) -> float:
     model.train()
     optimizer.zero_grad(set_to_none=True)
@@ -105,7 +106,7 @@ def train_one_epoch(
             images = images.contiguous(memory_format=torch.channels_last)
         with accelerator.accumulate(model):
             with accelerator.autocast():
-                loss = criterion(model(images), targets)
+                loss = model(images, targets=targets) if native_loss else criterion(model(images), targets)
             accelerator.backward(loss)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
@@ -181,18 +182,20 @@ def run_training(args) -> Path:
     logger = logger_for(run_dir) if accelerator.is_main_process else logging.getLogger("oemseg.worker")
 
     loaders = build_loaders(args)
+    model = build_model(args)
+    native_loss = bool(getattr(model, "uses_native_loss", False))
     configuration = config_dict(args, str(accelerator.device)) | {
         "world_size": accelerator.num_processes,
         "train_count": loaders.train_count,
         "val_count": loaders.internal_val_count,
         "test_count": loaders.test_count,
+        "effective_loss": "model_native" if native_loss else args.loss,
     }
     if accelerator.is_main_process:
         (run_dir / "config.json").write_text(json.dumps(configuration, indent=2))
         write_split_manifests(run_dir, loaders)
     accelerator.wait_for_everyone()
 
-    model = build_model(args)
     if args.channels_last:
         model = model.to(memory_format=torch.channels_last)
     parameter_count = sum(parameter.numel() for parameter in model.parameters())
@@ -289,6 +292,7 @@ def run_training(args) -> Path:
                 max_batches=max_batches,
                 description=f"epoch {epoch}/{epochs}",
                 channels_last=args.channels_last,
+                native_loss=native_loss,
             )
             scheduler.step()
             record: dict[str, float | int] = {

@@ -33,3 +33,15 @@ def test_unetformer_setup_pins_upstream_geoseg():
     assert "WangLibo1995/GeoSeg" in text
     assert "9453fe48209c4626b29e35e61bab93b61212c4b1" in text
     assert ".vendor/GeoSeg" in text
+
+
+def test_openmmlab_baseline_setup_is_isolated_and_pinned():
+    path = Path("scripts/setup_openmmlab_baselines.sh")
+    assert path.exists()
+    text = path.read_text()
+    assert "oem-openmmlab" in text
+    assert "torch==2.0.1" in text
+    assert "mmcv==2.0.1" in text
+    assert "mmsegmentation==1.1.2" in text
+    assert "mmpretrain==1.2.0" in text
+    assert "paper_models.py setup repstdc" in text
