@@ -179,6 +179,32 @@ python scripts/launch.py distributed \
 
 Replace only `unet` with the requested model. In no-validation mode, the selected checkpoint is `best_train_loss.pt`; the 500-image public OpenEarthMap validation split is evaluated as the reported `test_*` split and never selects weights. The paper reports **60.4% mIoU for U-Net**, **68.0% for UNetFormer/Swin-B**, and **70.8% for PyramidMamba/Swin-B**. `--model unetformer` now selects the pinned official GeoSeg FTUNetFormer/Swin-B path by default; use `--model-variant resnet18` only when intentionally benchmarking the lighter SWSL-ResNet18 model.
 
+
+### Headless Kaggle T4x2 + automatic W&B sync
+
+On the configured PC, `scripts/kaggle_pipeline.py` replaces the manual dataset-page → New Notebook → Add-ons → paste-code → Save Version flow. It generates a private Kaggle notebook through the Kaggle CLI, attaches `duy18102004/oem-dataset`, requests `NvidiaTeslaT4` with internet enabled, waits for the version to finish, downloads the outputs, and then runs `wandb sync` locally. Kaggle itself uses W&B **offline** mode, so the W&B API key never appears in the notebook or Kaggle metadata.
+
+The PC-side Kaggle/W&B client lives outside the repository at `~/.local/share/oem-kaggle-client`; the default authorized token is read from `~/.config/kaggle/accounts/account_1/access_token`. Generated notebooks, downloaded outputs, watcher logs, and state JSON are stored under `~/.local/state/oem-kaggle`, also outside the repository.
+
+Run a short integration version:
+
+```bash
+~/.local/share/oem-kaggle-client/bin/python scripts/kaggle_pipeline.py \
+  --model unet \
+  --smoke \
+  --detach
+```
+
+Run the full 45-epoch paper recipe by changing only the model name and omitting `--smoke`:
+
+```bash
+~/.local/share/oem-kaggle-client/bin/python scripts/kaggle_pipeline.py \
+  --model unetformer \
+  --detach
+```
+
+`--detach` returns immediately while a local watcher continues `push → status polling → output download → W&B sync`. The final `state.json` is marked `SYNCED` only after W&B upload succeeds; Kaggle failures/cancellations do not get reported as successful syncs. Supported model names are `unet`, `unetformer`, `segformer`, `segnext`, `repstdc`, `mambavision`, `pyramidmamba`, and `mask2former`.
+
 ## Default evaluation and checkpoint schedule
 
 The 45-epoch research schedule avoids expensive evaluation during the early optimization phase. The table below shows the full schedule when internal validation is enabled; with the default `--val-fraction 0`, validation rows are simply skipped while the reported test checkpoints remain informational only:
