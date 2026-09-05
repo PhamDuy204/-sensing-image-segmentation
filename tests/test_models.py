@@ -240,9 +240,11 @@ def test_segnext_decode_head_runs_in_float32_under_autocast():
         def __init__(self):
             super().__init__()
             self.conv = nn.Conv2d(3, 8, 1)
+            self.output_dtype = None
 
         def forward(self, images):
             feature = self.conv(images)
+            self.output_dtype = feature.dtype
             return (feature, feature, feature, feature)
 
     class FakeHead(nn.Module):
@@ -255,11 +257,13 @@ def test_segnext_decode_head_runs_in_float32_under_autocast():
             self.input_dtype = features[-1].dtype
             return self.classifier(features[-1])
 
+    backbone = FakeBackbone()
     head = FakeHead()
-    model = SegNeXtAdapter(pretrained=False, backbone=FakeBackbone(), decode_head=head)
+    model = SegNeXtAdapter(pretrained=False, backbone=backbone, decode_head=head)
     x = torch.randn(1, 3, 16, 16)
     with torch.autocast("cpu", dtype=torch.bfloat16):
         logits = model(x)
+    assert backbone.output_dtype == torch.float32
     assert head.input_dtype == torch.float32
     assert torch.isfinite(logits).all()
 

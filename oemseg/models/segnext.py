@@ -86,8 +86,13 @@ class SegNeXtAdapter(SegmentationModelAdapter):
         return self._backbone
 
     def forward(self, images: Tensor) -> Tensor:
-        features = self._backbone(images)
+        # The official SegNeXt training recipe is full precision.  Keeping the
+        # MSCAN backbone under fp16 autocast can overflow after repeated updates,
+        # so run the complete SegNeXt forward in float32 even when the shared
+        # trainer uses AMP for other baselines.
         with torch.autocast(device_type=images.device.type, enabled=False):
+            float_images = images.float()
+            features = self._backbone(float_images)
             logits = self.decode_head(tuple(feature.float() for feature in features))
         return F.interpolate(logits, size=images.shape[-2:], mode="bilinear", align_corners=False)
 
