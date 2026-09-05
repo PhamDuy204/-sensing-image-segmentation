@@ -96,9 +96,14 @@ class PyramidMambaAdapter(SegmentationModelAdapter):
         return self.model.backbone
 
     def forward(self, images: Tensor) -> Tensor:
-        logits = self.model(images)
-        if logits.shape[-2:] != images.shape[-2:]:
-            logits = F.interpolate(logits, size=images.shape[-2:], mode="bilinear", align_corners=False)
+        # PyramidMamba is numerically unstable on Kaggle T4 when the Swin
+        # backbone/decoder remain under fp16 autocast for long DDP runs.  Run
+        # the complete model in float32 while keeping the shared trainer's AMP
+        # policy unchanged for the other baselines.
+        with torch.autocast(device_type=images.device.type, enabled=False):
+            logits = self.model(images.float())
+            if logits.shape[-2:] != images.shape[-2:]:
+                logits = F.interpolate(logits, size=images.shape[-2:], mode="bilinear", align_corners=False)
         return logits
 
 

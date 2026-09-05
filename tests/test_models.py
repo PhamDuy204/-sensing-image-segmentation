@@ -305,10 +305,21 @@ def test_pyramidmamba_repairs_zeroed_dt_projection_and_runs_mamba_block_in_float
         def forward(self, x):
             return self.head(self.b3(x))
 
+    class FakeBackbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = nn.Conv2d(3, 8, 1)
+            self.output_dtype = None
+
+        def forward(self, images):
+            features = self.conv(images)
+            self.output_dtype = features.dtype
+            return features
+
     class FakePyramidMamba(nn.Module):
         def __init__(self):
             super().__init__()
-            self.backbone = nn.Conv2d(3, 8, 1)
+            self.backbone = FakeBackbone()
             self.decoder = FakeDecoder()
 
         def forward(self, images):
@@ -324,5 +335,7 @@ def test_pyramidmamba_repairs_zeroed_dt_projection_and_runs_mamba_block_in_float
     x = torch.randn(1, 3, 16, 16)
     with torch.autocast("cpu", dtype=torch.bfloat16):
         logits = model(x)
+    assert upstream.backbone.output_dtype == torch.float32
     assert mamba.input_dtype == torch.float32
+    assert logits.dtype == torch.float32
     assert torch.isfinite(logits).all()
