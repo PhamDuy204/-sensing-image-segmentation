@@ -92,6 +92,10 @@ def build_model_from_values(
 
 
 def build_model(args: argparse.Namespace) -> SegmentationModelAdapter:
-    return build_model_from_values(
+    model = build_model_from_values(
         args.model, args.model_variant, args.pretrained, args.decoder, args.decoder_channels
     )
+    native_loss_name = getattr(model, "native_loss_name", None)
+    if native_loss_name is not None:
+        model.uses_native_loss = getattr(args, "loss", native_loss_name) == native_loss_name
+    return model

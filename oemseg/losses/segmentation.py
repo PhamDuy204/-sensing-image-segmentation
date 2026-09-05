@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import segmentation_models_pytorch as smp
-import torch
 from torch import Tensor, nn
 
 
@@ -19,6 +17,8 @@ class CrossEntropyLoss(nn.Module):
 class DiceLoss(nn.Module):
     def __init__(self) -> None:
         super().__init__()
+        import segmentation_models_pytorch as smp
+
         self.loss = smp.losses.DiceLoss(mode="multiclass", from_logits=True)
 
     def forward(self, logits: Tensor, target: Tensor) -> Tensor:

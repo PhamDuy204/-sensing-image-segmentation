@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from oemseg.constants import NUM_CLASSES
+from oemseg.losses.unetformer import build_unetformer_loss
 from oemseg.models.base import SegmentationModelAdapter
 from oemseg.models.registry import register_model
 
@@ -40,7 +41,8 @@ def _compatible_pad(self, x, patch_size):
 def _load_upstream():
     if not (GEOSEG_DIR / "geoseg" / "models" / "UNetFormer.py").exists():
         raise ImportError("UNetFormer source is missing; run bash scripts/setup_unetformer.sh")
-    sys.path.insert(0, str(GEOSEG_DIR))
+    if str(GEOSEG_DIR) not in sys.path:
+        sys.path.insert(0, str(GEOSEG_DIR))
     upstream = importlib.import_module("geoseg.models.UNetFormer")
     upstream.GlobalLocalAttention.pad = _compatible_pad
     return upstream
@@ -49,13 +51,16 @@ def _load_upstream():
 def _load_ft_upstream():
     if not (GEOSEG_DIR / "geoseg" / "models" / "FTUNetFormer.py").exists():
         raise ImportError("FTUNetFormer source is missing; run bash scripts/setup_unetformer.sh")
-    sys.path.insert(0, str(GEOSEG_DIR))
+    if str(GEOSEG_DIR) not in sys.path:
+        sys.path.insert(0, str(GEOSEG_DIR))
     upstream = importlib.import_module("geoseg.models.FTUNetFormer")
     upstream.GlobalLocalAttention.pad = _compatible_pad
     return upstream
 
 
 class UNetFormerAdapter(SegmentationModelAdapter):
+    native_loss_name = "unetformer"
+
     def __init__(
         self,
         variant: str = "resnet18",
@@ -65,7 +70,7 @@ class UNetFormerAdapter(SegmentationModelAdapter):
         model: nn.Module | None = None,
     ) -> None:
         super().__init__()
-        loss = None
+        injected_model = model is not None
         variant_key = variant.lower().replace("_", "-")
         self.backbone_name = "swsl_resnet18" if variant_key == "resnet18" else variant
         if model is None and variant_key in {"swin-b", "swin-base", "swinb"}:
@@ -78,13 +83,6 @@ class UNetFormerAdapter(SegmentationModelAdapter):
                 decoder_channels=decoder_channels,
                 weight_path=str(SWIN_BASE_WEIGHT),
             )
-            losses = importlib.import_module("geoseg.losses")
-            loss = losses.JointLoss(
-                losses.SoftCrossEntropyLoss(smooth_factor=0.05, ignore_index=num_classes),
-                losses.DiceLoss(smooth=0.05, ignore_index=num_classes),
-                1.0,
-                1.0,
-            )
         elif model is None:
             upstream = _load_upstream()
             model = upstream.UNetFormer(
@@ -93,10 +91,9 @@ class UNetFormerAdapter(SegmentationModelAdapter):
                 pretrained=pretrained,
                 num_classes=num_classes,
             )
-            loss = importlib.import_module("geoseg.losses").UnetFormerLoss(ignore_index=num_classes)
         self.model = model
-        self.loss = loss
-        self.uses_native_loss = loss is not None
+        self.loss = None if injected_model else build_unetformer_loss(variant, num_classes)
+        self.uses_native_loss = self.loss is not None
 
     @property
     def backbone(self) -> nn.Module:

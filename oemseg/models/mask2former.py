@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from oemseg.constants import CLASS_NAMES, NUM_CLASSES
+from oemseg.losses.mask2former import mask2former_native_loss
 from oemseg.models.base import SegmentationModelAdapter
 from oemseg.models.registry import register_model
 
@@ -39,6 +40,7 @@ def _tiny_config(num_classes: int):
 
 
 class Mask2FormerAdapter(SegmentationModelAdapter):
+    native_loss_name = "mask2former"
     uses_native_loss = True
 
     def __init__(
@@ -73,27 +75,9 @@ class Mask2FormerAdapter(SegmentationModelAdapter):
     def backbone(self) -> nn.Module:
         return self._backbone
 
-    @staticmethod
-    def _targets(targets: Tensor) -> tuple[list[Tensor], list[Tensor]]:
-        masks: list[Tensor] = []
-        labels: list[Tensor] = []
-        for target in targets:
-            present = torch.unique(target).long()
-            labels.append(present)
-            masks.append(torch.stack([target.eq(label) for label in present]).float())
-        return masks, labels
-
     def forward(self, images: Tensor, targets: Tensor | None = None) -> Tensor:
         if targets is not None:
-            mask_labels, class_labels = self._targets(targets)
-            output = self.model(
-                pixel_values=images,
-                mask_labels=mask_labels,
-                class_labels=class_labels,
-            )
-            if output.loss is None:
-                raise RuntimeError("Mask2Former did not return its native training loss")
-            return output.loss
+            return mask2former_native_loss(self.model, images, targets)
 
         output = self.model(pixel_values=images)
         class_scores = output.class_queries_logits.softmax(dim=-1)[..., : self.num_classes]

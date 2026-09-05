@@ -25,6 +25,32 @@ def test_default_cli_preserves_training_behavior_with_staged_evaluation():
     assert args.wandb_entity == "phamdinhanhduy-university-of-information-and-technology"
 
 
+def test_auto_loss_resolves_to_model_specific_published_recipe():
+    expected = {
+        "unet": "ce_dice",
+        "unetformer": "unetformer",
+        "segformer": "ce",
+        "segnext": "ce",
+        "repstdc": "repstdc",
+        "mambavision": "ce_dice",
+        "pyramidmamba": "ce_dice",
+        "mask2former": "mask2former",
+    }
+    for model, loss in expected.items():
+        assert parse_args(["--model", model, "--no-pretrained"]).loss == loss
+
+
+def test_unetformer_and_repstdc_accept_explicit_dense_loss_override():
+    assert parse_args(["--model", "unetformer", "--loss", "ce_dice", "--no-pretrained"]).loss == "ce_dice"
+    assert parse_args(["--model", "unetformer", "--loss", "soft_ce_dice", "--no-pretrained"]).loss == "soft_ce_dice"
+    assert parse_args(["--model", "repstdc", "--loss", "ce", "--no-pretrained"]).loss == "ce"
+
+
+def test_mask2former_rejects_incompatible_loss_override():
+    with pytest.raises(SystemExit):
+        parse_args(["--model", "mask2former", "--loss", "ce_dice", "--no-pretrained"])
+
+
 def test_val_fraction_accepts_new_and_legacy_flag_names():
     assert parse_args(["--val-fraction", "0.2"]).internal_val_fraction == 0.2
     assert parse_args(["--internal-val-fraction", "0.25"]).internal_val_fraction == 0.25
@@ -61,6 +87,7 @@ def test_unetformer_is_registered_with_paper_swin_b_default():
     assert "unetformer" in available_models()
     args = parse_args(["--model", "unetformer", "--no-pretrained"])
     assert args.model_variant == "swin-b"
+    assert args.loss == "unetformer"
 
 
 def test_pyramidmamba_is_registered_with_published_swin_default():
@@ -69,6 +96,7 @@ def test_pyramidmamba_is_registered_with_published_swin_default():
     assert args.model == "pyramidmamba"
     assert args.model_variant == "swin_base_patch4_window12_384.ms_in22k_ft_in1k"
     assert args.pretrained is False
+    assert args.loss == "ce_dice"
 
 
 def test_new_paper_baselines_are_registered_with_published_defaults():

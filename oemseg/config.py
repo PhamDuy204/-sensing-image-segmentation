@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from oemseg.losses.registry import available_losses, resolve_loss_name
 from oemseg.models.registry import available_models, normalize_name
 
-LOSS_NAMES = ("ce", "dice", "ce_dice")
 OPTIMIZER_NAMES = ("adam", "adamw")
 MODEL_DEFAULT_VARIANTS = {
     "unet": "resnet18",
@@ -34,7 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--encoder", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--encoder-weights", choices=["imagenet", "none"], default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--loss", default="ce_dice")
+    parser.add_argument(
+        "--loss",
+        default="auto",
+        help=f"training loss ({', '.join(available_losses())}); auto selects the model's published/native recipe",
+    )
     parser.add_argument("--optimizer", default="adamw")
     parser.add_argument("--epochs", type=int, default=45)
     parser.add_argument("--batch-size", type=int, default=2)
@@ -108,11 +112,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.pretrained is None:
         args.pretrained = True
 
-    args.loss = normalize_name(args.loss)
-    if args.loss == "cedice":
-        args.loss = "ce_dice"
-    if args.loss not in LOSS_NAMES:
-        parser.error(f"unknown loss '{args.loss}'; valid losses: {', '.join(LOSS_NAMES)}")
+    try:
+        args.loss = resolve_loss_name(args.loss, args.model)
+    except ValueError as error:
+        parser.error(str(error))
     args.optimizer = normalize_name(args.optimizer)
     if args.optimizer not in OPTIMIZER_NAMES:
         parser.error(f"unknown optimizer '{args.optimizer}'; valid optimizers: {', '.join(OPTIMIZER_NAMES)}")
