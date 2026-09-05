@@ -33,7 +33,7 @@ def build_kernel_files(
     *, owner: str, slug: str, model: str, smoke: bool, repo_ref: str
 ) -> tuple[dict[str, object], dict[str, object]]:
     code_file = f"{slug}.ipynb"
-    repo_dir = "/kaggle/working/OEM_Segmentation"
+    repo_dir = "/kaggle/tmp/OEM_Segmentation"
     source = [
         "%%bash\n",
         "set -Eeuo pipefail\n",
@@ -236,7 +236,7 @@ def _foreground(args: argparse.Namespace) -> int:
 
     print("Downloading Kaggle outputs", flush=True)
     _run(
-        [str(kaggle_bin), "kernels", "output", kernel, "-p", str(output_dir), "-o"],
+        [str(kaggle_bin), "kernels", "output", kernel, "-p", str(output_dir), "-o", "-q"],
         env=kaggle_env,
     )
     _state_update(state_path, state, status="DOWNLOADED")

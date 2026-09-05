@@ -72,3 +72,18 @@ def test_find_offline_runs_finds_downloaded_wandb_runs(tmp_path):
     (second / "run-b.wandb").write_text("x")
 
     assert find_offline_runs(tmp_path) == [first, second]
+
+
+def test_generated_notebook_keeps_repository_out_of_kaggle_outputs():
+    from scripts.kaggle_pipeline import build_kernel_files
+
+    notebook, _ = build_kernel_files(
+        owner="duy18102004",
+        slug="oem-unet-paper-repro-smoke",
+        model="unet",
+        smoke=True,
+        repo_ref="main",
+    )
+    source = "\n".join(notebook["cells"][0]["source"])
+    assert "REPO_DIR=/kaggle/tmp/OEM_Segmentation" in source
+    assert "REPO_DIR=/kaggle/working/OEM_Segmentation" not in source
