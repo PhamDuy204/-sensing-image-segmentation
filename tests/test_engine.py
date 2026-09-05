@@ -185,3 +185,93 @@ def test_train_one_epoch_can_use_model_native_loss_without_calling_shared_criter
         native_loss=True,
     )
     assert loss > 0
+
+
+class PrecisionProbeAccelerator:
+    device = torch.device("cpu")
+    is_local_main_process = True
+    sync_gradients = True
+
+    def __init__(self):
+        self.clipped = False
+        self.triggered = False
+
+    def accumulate(self, model):
+        from contextlib import nullcontext
+        return nullcontext()
+
+    def autocast(self):
+        return torch.autocast("cpu", dtype=torch.bfloat16)
+
+    def backward(self, loss):
+        loss.backward()
+
+    def clip_grad_norm_(self, parameters, max_norm):
+        self.clipped = True
+        return torch.nn.utils.clip_grad_norm_(parameters, max_norm)
+
+    def reduce(self, tensor, reduction="sum"):
+        return tensor
+
+    def set_trigger(self):
+        self.triggered = True
+
+    def check_trigger(self):
+        triggered = self.triggered
+        self.triggered = False
+        return triggered
+
+
+def test_train_one_epoch_computes_shared_loss_in_float32_under_autocast():
+    class ProbeLoss(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.dtype = None
+
+        def forward(self, logits, targets):
+            self.dtype = logits.dtype
+            return torch.nn.functional.cross_entropy(logits, targets)
+
+    accelerator = PrecisionProbeAccelerator()
+    model = torch.nn.Conv2d(3, 9, 1)
+    loader = DataLoader(
+        TensorDataset(torch.randn(1, 3, 8, 8), torch.randint(0, 9, (1, 8, 8))),
+        batch_size=1,
+    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    criterion = ProbeLoss()
+    train_one_epoch(model, loader, criterion, optimizer, accelerator)
+    assert criterion.dtype == torch.float32
+
+
+def test_train_one_epoch_clips_synchronized_gradients():
+    accelerator = PrecisionProbeAccelerator()
+    model = torch.nn.Conv2d(3, 9, 1)
+    loader = DataLoader(
+        TensorDataset(torch.randn(1, 3, 8, 8), torch.randint(0, 9, (1, 8, 8))),
+        batch_size=1,
+    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    train_one_epoch(model, loader, torch.nn.CrossEntropyLoss(), optimizer, accelerator)
+    assert accelerator.clipped
+
+
+def test_train_one_epoch_fails_before_step_on_nonfinite_loss():
+    class NaNLoss(torch.nn.Module):
+        def forward(self, logits, targets):
+            return logits.sum() * torch.tensor(float("nan"))
+
+    accelerator = PrecisionProbeAccelerator()
+    model = torch.nn.Conv2d(3, 9, 1)
+    loader = DataLoader(
+        TensorDataset(torch.randn(1, 3, 8, 8), torch.randint(0, 9, (1, 8, 8))),
+        batch_size=1,
+    )
+    optimizer = CountingSGD(model.parameters())
+    try:
+        train_one_epoch(model, loader, NaNLoss(), optimizer, accelerator)
+    except FloatingPointError as error:
+        assert "Non-finite loss" in str(error)
+    else:
+        raise AssertionError("non-finite loss must stop training")
+    assert optimizer.steps == 0

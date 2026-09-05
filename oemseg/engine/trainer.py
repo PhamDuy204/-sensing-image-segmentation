@@ -106,8 +106,25 @@ def train_one_epoch(
             images = images.contiguous(memory_format=torch.channels_last)
         with accelerator.accumulate(model):
             with accelerator.autocast():
-                loss = model(images, targets=targets) if native_loss else criterion(model(images), targets)
+                if native_loss:
+                    loss = model(images, targets=targets)
+                else:
+                    logits = model(images)
+            if not native_loss:
+                with torch.autocast(device_type=accelerator.device.type, enabled=False):
+                    loss = criterion(logits.float(), targets)
+
+            if not torch.isfinite(loss.detach()):
+                accelerator.set_trigger()
+            if accelerator.check_trigger():
+                optimizer.zero_grad(set_to_none=True)
+                raise FloatingPointError(
+                    f"Non-finite loss detected at batch {batch_index + 1}: {loss.detach().float().item()}"
+                )
+
             accelerator.backward(loss)
+            if accelerator.sync_gradients:
+                accelerator.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         loss_sum += loss.detach().float() * targets.shape[0]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
@@ -85,7 +86,9 @@ class SegNeXtAdapter(SegmentationModelAdapter):
         return self._backbone
 
     def forward(self, images: Tensor) -> Tensor:
-        logits = self.decode_head(self._backbone(images))
+        features = self._backbone(images)
+        with torch.autocast(device_type=images.device.type, enabled=False):
+            logits = self.decode_head(tuple(feature.float() for feature in features))
         return F.interpolate(logits, size=images.shape[-2:], mode="bilinear", align_corners=False)
 
 

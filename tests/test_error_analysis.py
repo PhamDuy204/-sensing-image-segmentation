@@ -66,3 +66,39 @@ def test_error_analysis_writes_sorted_top_n_without_images(tmp_path: Path):
     assert {record["epoch"] for record in records} == {3}
     assert {record["split"] for record in records} == {"val"}
     assert all("image" not in record and "prediction" not in record for record in records)
+
+
+def test_evaluate_computes_loss_in_float32_under_autocast():
+    class ProbeAccelerator:
+        device = torch.device("cpu")
+        is_local_main_process = True
+        is_main_process = True
+
+        def autocast(self):
+            return torch.autocast("cpu", dtype=torch.bfloat16)
+
+        def gather_for_metrics(self, value, use_gather_object=False):
+            return value
+
+    class ProbeLoss(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.dtype = None
+
+        def forward(self, logits, targets):
+            self.dtype = logits.dtype
+            return torch.nn.functional.cross_entropy(logits, targets)
+
+    images = torch.randn(1, 3, 8, 8)
+    targets = torch.randint(0, 9, (1, 8, 8))
+    loader = DataLoader(torch.utils.data.TensorDataset(images, targets), batch_size=1)
+    criterion = ProbeLoss()
+    evaluate(
+        torch.nn.Conv2d(3, 9, 1),
+        loader,
+        criterion,
+        ProbeAccelerator(),
+        [1.0],
+        False,
+    )
+    assert criterion.dtype == torch.float32

@@ -60,13 +60,15 @@ def evaluate(
                 images = images.contiguous(memory_format=torch.channels_last)
             with accelerator.autocast():
                 logits = model_logits(model, images, scales, flips)
-                batch_loss = criterion(logits, targets)
+            with torch.autocast(device_type=accelerator.device.type, enabled=False):
+                float_logits = logits.float()
+                batch_loss = criterion(float_logits, targets)
                 if names is None:
                     sample_losses = batch_loss.detach().repeat(targets.shape[0])
                 else:
                     sample_losses = torch.stack(
                         [
-                            criterion(logits[index : index + 1], targets[index : index + 1])
+                            criterion(float_logits[index : index + 1], targets[index : index + 1])
                             for index in range(targets.shape[0])
                         ]
                     ).detach()
@@ -87,6 +89,8 @@ def evaluate(
 
     matrices = torch.cat(gathered_matrices)
     losses = torch.cat(gathered_losses)
+    if not torch.isfinite(losses).all():
+        raise FloatingPointError("Non-finite evaluation loss detected")
     metrics = metrics_from_matrix(matrices.sum(0))
     samples: list[dict[str, object]] = []
     if accelerator.is_main_process and gathered_names:

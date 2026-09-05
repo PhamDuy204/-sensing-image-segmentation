@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import importlib
+import math
 import sys
 from pathlib import Path
 
+import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
@@ -23,6 +25,42 @@ def _load_upstream():
     if str(GEOSEG_DIR) not in sys.path:
         sys.path.insert(0, str(GEOSEG_DIR))
     return importlib.import_module("geoseg.models.PyramidMamba")
+
+
+class _Float32Module(nn.Module):
+    def __init__(self, module: nn.Module) -> None:
+        super().__init__()
+        self.module = module
+
+    def forward(self, x: Tensor) -> Tensor:
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            return self.module(x.float())
+
+
+def _repair_mamba_dt_projection(model: nn.Module) -> None:
+    for module in model.modules():
+        dt_proj = getattr(module, "dt_proj", None)
+        bias = getattr(dt_proj, "bias", None)
+        if not isinstance(dt_proj, nn.Linear) or bias is None or not getattr(bias, "_no_reinit", False):
+            continue
+
+        bias._no_weight_decay = True
+        for parameter_name in ("A_log", "D"):
+            parameter = getattr(module, parameter_name, None)
+            if isinstance(parameter, nn.Parameter):
+                parameter._no_weight_decay = True
+
+        if torch.count_nonzero(bias.detach()).item() != 0:
+            continue
+
+        dt_rank = int(getattr(module, "dt_rank", dt_proj.in_features))
+        dt_init_std = dt_rank**-0.5
+        with torch.no_grad():
+            nn.init.uniform_(dt_proj.weight, -dt_init_std, dt_init_std)
+            dt = torch.exp(
+                torch.rand_like(bias) * (math.log(0.1) - math.log(0.001)) + math.log(0.001)
+            ).clamp(min=1e-4)
+            bias.copy_(dt + torch.log(-torch.expm1(-dt)))
 
 
 class PyramidMambaAdapter(SegmentationModelAdapter):
@@ -48,6 +86,10 @@ class PyramidMambaAdapter(SegmentationModelAdapter):
                 img_size=1024,
             )
         self.model = model
+        _repair_mamba_dt_projection(self.model)
+        mamba_layer = getattr(getattr(getattr(self.model, "decoder", None), "b3", None), "mamba", None)
+        if isinstance(mamba_layer, nn.Module) and not isinstance(mamba_layer, _Float32Module):
+            self.model.decoder.b3.mamba = _Float32Module(mamba_layer)
 
     @property
     def backbone(self) -> nn.Module:

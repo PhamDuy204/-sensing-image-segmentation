@@ -230,3 +230,95 @@ def test_mask2former_adapter_dense_logits_and_native_loss_with_fake_model():
     groups = model.parameter_groups(base_lr=6e-4, backbone_lr=6e-5)
     ids = [{id(p) for p in group["params"]} for group in groups]
     assert ids[0] and ids[1] and ids[0].isdisjoint(ids[1])
+
+
+def test_segnext_decode_head_runs_in_float32_under_autocast():
+    from torch import nn
+    from oemseg.models.segnext import SegNeXtAdapter
+
+    class FakeBackbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = nn.Conv2d(3, 8, 1)
+
+        def forward(self, images):
+            feature = self.conv(images)
+            return (feature, feature, feature, feature)
+
+    class FakeHead(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.classifier = nn.Conv2d(8, 9, 1)
+            self.input_dtype = None
+
+        def forward(self, features):
+            self.input_dtype = features[-1].dtype
+            return self.classifier(features[-1])
+
+    head = FakeHead()
+    model = SegNeXtAdapter(pretrained=False, backbone=FakeBackbone(), decode_head=head)
+    x = torch.randn(1, 3, 16, 16)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        logits = model(x)
+    assert head.input_dtype == torch.float32
+    assert torch.isfinite(logits).all()
+
+
+def test_pyramidmamba_repairs_zeroed_dt_projection_and_runs_mamba_block_in_float32():
+    from torch import nn
+    from oemseg.models.pyramidmamba import PyramidMambaAdapter
+
+    class FakeMambaLayer(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.dt_rank = 2
+            self.d_inner = 8
+            self.dt_proj = nn.Linear(self.dt_rank, self.d_inner, bias=True)
+            self.dt_proj.bias._no_reinit = True
+            nn.init.zeros_(self.dt_proj.weight)
+            nn.init.zeros_(self.dt_proj.bias)
+            self.proj = nn.Conv2d(8, 8, 1)
+            self.input_dtype = None
+
+        def forward(self, x):
+            self.input_dtype = x.dtype
+            return self.proj(x)
+
+    class FakeBlock(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.mamba = FakeMambaLayer()
+
+        def forward(self, x):
+            return self.mamba(x)
+
+    class FakeDecoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.b3 = FakeBlock()
+            self.head = nn.Conv2d(8, 9, 1)
+
+        def forward(self, x):
+            return self.head(self.b3(x))
+
+    class FakePyramidMamba(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = nn.Conv2d(3, 8, 1)
+            self.decoder = FakeDecoder()
+
+        def forward(self, images):
+            return self.decoder(self.backbone(images))
+
+    upstream = FakePyramidMamba()
+    mamba = upstream.decoder.b3.mamba
+    model = PyramidMambaAdapter(model=upstream)
+
+    assert not torch.equal(mamba.dt_proj.bias, torch.zeros_like(mamba.dt_proj.bias))
+    assert getattr(mamba.dt_proj.bias, "_no_weight_decay", False)
+
+    x = torch.randn(1, 3, 16, 16)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        logits = model(x)
+    assert mamba.input_dtype == torch.float32
+    assert torch.isfinite(logits).all()
