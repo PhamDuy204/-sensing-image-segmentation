@@ -112,12 +112,63 @@ def test_unetformer_adapter_contract_with_fake_upstream():
     model.train()
     logits = model(torch.randn(1, 3, 64, 64))
     assert logits.shape == (1, 9, 64, 64)
-    assert all(not parameter.requires_grad for parameter in model.model.decoder.aux_head.parameters())
+    assert all(parameter.requires_grad for parameter in model.model.decoder.aux_head.parameters())
     logits.mean().backward()
-    assert all(parameter.grad is not None for parameter in model.parameters() if parameter.requires_grad)
     groups = model.parameter_groups(base_lr=6e-4, backbone_lr=6e-5)
     ids = [{id(p) for p in group["params"]} for group in groups]
     assert ids[0] and ids[1] and ids[0].isdisjoint(ids[1])
+
+
+def test_unetformer_uses_official_auxiliary_loss_when_targets_are_given():
+    from oemseg.models.unetformer import UNetFormerAdapter
+
+    model = UNetFormerAdapter(variant="resnet18", pretrained=False, decoder_channels=64)
+    model.train()
+    images = torch.randn(2, 3, 64, 64)
+    targets = torch.randint(0, 9, (2, 64, 64))
+
+    loss = model(images, targets=targets)
+    assert model.backbone_name == "swsl_resnet18"
+    assert model.uses_native_loss is True
+    assert loss.ndim == 0
+    loss.backward()
+    assert any(parameter.grad is not None for parameter in model.model.decoder.aux_head.parameters())
+
+
+def test_unetformer_swin_b_uses_official_ft_factory(monkeypatch):
+    from types import SimpleNamespace
+    from torch import nn
+    from oemseg.models import unetformer as module
+
+    captured = {}
+
+    class FakeFTUNetFormer(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = nn.Conv2d(3, 8, 3, padding=1)
+            self.decoder = nn.Conv2d(8, 9, 1)
+
+        def forward(self, images):
+            return self.decoder(self.backbone(images))
+
+    def build_ft(**kwargs):
+        captured.update(kwargs)
+        return FakeFTUNetFormer()
+
+    monkeypatch.setattr(
+        module,
+        "_load_ft_upstream",
+        lambda: SimpleNamespace(ft_unetformer=build_ft),
+        raising=False,
+    )
+    module.sys.path.insert(0, str(module.GEOSEG_DIR))
+    model = module.UNetFormerAdapter(variant="swin-b", pretrained=False, decoder_channels=256)
+
+    assert captured["pretrained"] is False
+    assert captured["num_classes"] == 9
+    assert captured["decoder_channels"] == 256
+    assert model(torch.randn(1, 3, 64, 64)).shape == (1, 9, 64, 64)
+    assert model.uses_native_loss is True
 
 
 def test_pyramidmamba_adapter_contract_with_fake_upstream():

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-bash "$ROOT/scripts/setup_unetformer.sh"
+bash "$ROOT/scripts/setup_unetformer.sh" --source-only
 PYTHON="${PYTHON:-python}"
 MAMBA_VERSION="2.3.2.post1"
 TMP_REQ="$(mktemp)"

@@ -1,8 +1,8 @@
 # Modular OpenEarthMap semantic segmentation
 
-A compact research framework for interchangeable semantic-segmentation models on OpenEarthMap. All models share the same data split, optimizer/scheduler plumbing, evaluator, checkpointing, error analysis, W&B tracking, and single-/multi-GPU training engine. Dense-logit models use the shared CE/Dice losses; Mask2Former keeps its native Hungarian mask-classification loss.
+A compact research framework for interchangeable semantic-segmentation models on OpenEarthMap. All models share the same data split, optimizer/scheduler plumbing, evaluator, checkpointing, error analysis, W&B tracking, and single-/multi-GPU training engine. Most dense-logit models use the shared CE/Dice loss; UNetFormer keeps GeoSeg's published native objectives (joint soft-CE+Dice for FTUNetFormer/Swin-B, plus auxiliary CE for the ResNet18 variant), and Mask2Former keeps its native Hungarian mask-classification loss.
 
-OpenEarthMap's official `train.txt` (3000 labeled images) is split deterministically into **2700 train + 300 internal validation** images by default. The public `val.txt` (500 labeled images) is treated as the reported paper **test** set. The official 1500-image benchmark test is kept only for optional submission/export because public masks are unavailable.
+OpenEarthMap's official `train.txt` (**3000 labeled images**) is used in full by the accuracy-first default. The public `val.txt` (500 labeled images) is treated as the reported paper **test** set, matching the PyramidMamba paper because the official 1500-image benchmark test masks are not public. By default, checkpoint selection therefore uses minimum training loss; an internal validation split remains available explicitly with `--val-fraction > 0`.
 
 ## Project structure
 
@@ -21,7 +21,7 @@ OEM_Segmentation/
 │   └── utils/                  # logging, seeding, TTA, notifications
 ├── scripts/
 │   ├── setup_env.sh            # reproducible CUDA/Python environment setup
-│   ├── setup_unetformer.sh     # pin upstream GeoSeg UNetFormer source
+│   ├── setup_unetformer.sh     # pin GeoSeg + verify official Swin-B weights
 │   ├── setup_openmmlab_baselines.sh # isolated env for SegNeXt/RepSTDC
 │   ├── launch.py               # N-GPU launcher
 │   └── setup_dataset.sh        # reproducible OEM dataset bootstrap
@@ -30,7 +30,7 @@ OEM_Segmentation/
 └── tests/
 ```
 
-Every model adapter returns evaluation logits shaped `[B, 9, H, W]` and exposes backbone/main parameter groups. Mask2Former is the one deliberate exception during optimization: its adapter asks the same trainer to use the model's native Hungarian mask-classification loss.
+Every model adapter returns evaluation logits shaped `[B, 9, H, W]` and exposes backbone/main parameter groups. During optimization, UNetFormer and Mask2Former ask the same trainer to use their upstream-native objectives; all other registered dense-logit baselines use the shared loss registry.
 
 ## Environment
 
@@ -44,13 +44,13 @@ bash scripts/setup_env.sh
 
 The script:
 
-1. pins the upstream GeoSeg source used by the UNetFormer adapter under gitignored `.vendor/GeoSeg`,
+1. pins the upstream GeoSeg source used by the model adapters under gitignored `.vendor/GeoSeg`,
 2. verifies that the existing PyTorch build can see CUDA,
 3. installs normal project dependencies,
 4. detects the current Python/PyTorch/CUDA/CXX11-ABI stack and installs the matching prebuilt `mamba-ssm==2.3.2.post1` wheel directly from the official Mamba GitHub release, refusing to fall back to a long source compilation, and
 5. verifies imports plus a real CUDA `selective_scan_fn` smoke test.
 
-If the Python environment is already prepared and only UNetFormer source is missing, run `bash scripts/setup_unetformer.sh`. The adapter pins GeoSeg commit `9453fe48209c4626b29e35e61bab93b61212c4b1` instead of copying the model architecture into this repository.
+If the Python environment is already prepared, run `bash scripts/setup_unetformer.sh` before UNetFormer. It pins GeoSeg commit `9453fe48209c4626b29e35e61bab93b61212c4b1` and downloads/verifies GeoSeg's official `stseg_base.pth` for the paper-comparable Swin-B variant. Mamba setup uses the same pinned source with `--source-only`, so it does not download the 486 MB Swin weight unnecessarily.
 
 The verified Kaggle 2x T4 environment uses Python 3.12, PyTorch 2.10.0+cu128, CUDA 12.8, CXX11 ABI enabled, and the `cu12torch2.10cxx11abiTRUE-cp312` Mamba wheel. The project otherwise keeps the existing pinned/limited dependencies such as `transformers==4.50.0`, `timm==1.0.15`, and `einops==0.8.1`.
 
@@ -79,7 +79,7 @@ Verify an already prepared dataset without downloading/rebuilding:
 
 Split interpretation used by this project:
 
-- official `train.txt`: 3000 labeled images, internally split for training/validation;
+- official `train.txt`: 3000 labeled images, all used for training by default; optional internal validation is opt-in;
 - official `val.txt`: 500 labeled images, reported as `test_*` metrics;
 - official `test.txt`: 1500 benchmark images without public masks, not used for paper metrics.
 
@@ -98,7 +98,7 @@ Split interpretation used by this project:
 python train.py
 ```
 
-Defaults: UNet++/ResNet18 with ImageNet initialization, 9 classes, 1024×1024 input, batch size 2, AdamW, CE + Dice, **45 epochs**, five warmup epochs, polynomial LR decay, fp16, decoder LR `6e-4`, backbone LR `6e-5`, and weight decay `0.01`.
+Defaults: UNet++/ResNet18 with ImageNet initialization, 9 classes, 1024×1024 input, batch size 2, AdamW, CE + Dice, **45 epochs**, five warmup epochs, polynomial LR decay, full precision, decoder LR `6e-4`, backbone LR `6e-5`, weight decay `0.01`, all 3000 official-train images, and patience 5 on minimum training loss.
 
 Examples:
 
@@ -106,8 +106,12 @@ Examples:
 # U-Net
 python train.py --model unet --model-variant resnet18
 
-# UNetFormer / ResNet18 from pinned upstream GeoSeg
+# UNetFormer / PyramidMamba Table-8 comparable Swin-B recipe.
+# `unetformer` defaults to GeoSeg FTUNetFormer with the official stseg_base.pth.
 bash scripts/setup_unetformer.sh
+python train.py --model unetformer
+
+# Optional lightweight official GeoSeg UNetFormer: SWSL-ResNet18 + auxiliary CE.
 python train.py --model unetformer --model-variant resnet18
 
 # PyramidMamba from the same pinned upstream GeoSeg checkout
@@ -140,9 +144,28 @@ MambaVision uses NVIDIA's official `MambaVision-T-1K` implementation/weights thr
 
 The paper baseline order used by this repository is **U-Net → UNetFormer → SegFormer-B0 → SegNeXt-T → RepSTDC-CA → MambaVision-T → PyramidMamba → Mask2Former-Swin-Tiny → Our Model**. SegNeXt-T uses the official MSCAN-T + LightHamHead settings from MMSegmentation. RepSTDC-CA reuses the pinned official `mmseg_geo` architecture but changes only the input/output contract needed by this benchmark: RGB input and all 9 OpenEarthMap classes including background. Mask2Former keeps its own Hungarian matching/class-mask objective instead of replacing the method with dense CE+Dice.
 
+### Accuracy-first PyramidMamba-paper reproduction
+
+The PyramidMamba OpenEarthMap protocol is the reference for these runs: all 3000 official training images, 1024×1024 inputs, AdamW, Poly LR (`power=0.9`), LR `6e-4` / encoder LR `6e-5`, weight decay `0.01`, batch size 2, 45 epochs, five warmup epochs, early stopping, and multi-scale/flip TTA. Two GPUs still train **one model**, but each process uses batch 1 and synchronized BatchNorm so the global batch/statistics stay at 2 instead of silently changing the experiment to batch 4.
+
+```bash
+python scripts/launch.py distributed \
+  --gpus 0,1 \
+  --model unet \
+  -- \
+  --batch-size 1 \
+  --grad-accumulation 1 \
+  --val-fraction 0 \
+  --patience 5 \
+  --mixed-precision no \
+  --wandb
+```
+
+Replace only `unet` with the requested model. In no-validation mode, the selected checkpoint is `best_train_loss.pt`; the 500-image public OpenEarthMap validation split is evaluated as the reported `test_*` split and never selects weights. The paper reports **60.4% mIoU for U-Net**, **68.0% for UNetFormer/Swin-B**, and **70.8% for PyramidMamba/Swin-B**. `--model unetformer` now selects the pinned official GeoSeg FTUNetFormer/Swin-B path by default; use `--model-variant resnet18` only when intentionally benchmarking the lighter SWSL-ResNet18 model.
+
 ## Default evaluation and checkpoint schedule
 
-The default 45-epoch research run now avoids expensive evaluation during the early optimization phase:
+The 45-epoch research schedule avoids expensive evaluation during the early optimization phase. The table below shows the full schedule when internal validation is enabled; with the default `--val-fraction 0`, validation rows are simply skipped while the reported test checkpoints remain informational only:
 
 ```text
 epochs  1-30 : train only
@@ -173,9 +196,9 @@ Checkpoint selection has two modes, both using the same trainer:
 # Validation mode: 80% train / 20% internal validation; fixed reported test remains unchanged.
 python train.py --val-fraction 0.2
 
-# No-validation mode: all 3000 official-train images train the model.
+# No-validation mode (default): all 3000 official-train images train the model.
 # The selected checkpoint is the minimum training-loss checkpoint.
-python train.py --val-fraction 0 --patience 20
+python train.py --val-fraction 0 --patience 5
 ```
 
 With `--val-fraction > 0`, `best_val_miou.pt` is selected by internal-validation mIoU and `--patience` counts validation evaluations without improvement. With `--val-fraction 0`, `best_train_loss.pt` is selected by minimum training loss and `--patience` counts consecutive training epochs without a new minimum. `--patience 0` disables early stopping in either mode. The reported `test_*` metrics never select a checkpoint or drive early stopping.
@@ -262,7 +285,7 @@ These sidecar results are **not directly comparable** to the local closed-set 10
 
 The shared engine already uses:
 
-- fp16 mixed precision by default;
+- full precision by default for accuracy-first paper reproduction (`--mixed-precision fp16` remains opt-in);
 - high float32 matmul precision;
 - cuDNN benchmarking for the fixed-size CUDA workload;
 - pinned-memory DataLoaders;

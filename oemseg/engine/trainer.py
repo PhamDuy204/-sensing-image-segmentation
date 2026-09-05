@@ -38,6 +38,10 @@ def configure_torch_performance(device: torch.device) -> None:
         torch.backends.cudnn.benchmark = True
 
 
+def configure_distributed_batchnorm(model: nn.Module, world_size: int) -> nn.Module:
+    return nn.SyncBatchNorm.convert_sync_batchnorm(model) if world_size > 1 else model
+
+
 def update_validation_state(
     val_miou: float, best_val_miou: float, stale: int
 ) -> tuple[float, int, bool]:
@@ -123,8 +127,6 @@ def train_one_epoch(
                 )
 
             accelerator.backward(loss)
-            if accelerator.sync_gradients:
-                accelerator.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         loss_sum += loss.detach().float() * targets.shape[0]
@@ -199,7 +201,7 @@ def run_training(args) -> Path:
     logger = logger_for(run_dir) if accelerator.is_main_process else logging.getLogger("oemseg.worker")
 
     loaders = build_loaders(args)
-    model = build_model(args)
+    model = configure_distributed_batchnorm(build_model(args), accelerator.num_processes)
     native_loss = bool(getattr(model, "uses_native_loss", False))
     configuration = config_dict(args, str(accelerator.device)) | {
         "world_size": accelerator.num_processes,

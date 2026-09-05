@@ -12,13 +12,14 @@ def test_default_cli_preserves_training_behavior_with_staged_evaluation():
     assert args.optimizer == "adamw"
     assert args.epochs == 45
     assert args.grad_accumulation == 1
-    assert args.internal_val_fraction == 0.1
+    assert args.internal_val_fraction == 0.0
+    assert args.patience == 5
     assert args.eval_start_epoch == 30
     assert args.eval_start_fraction is None
     assert args.eval_every == 1
     assert args.test_every_validations == 3
     assert args.bad_predict_top_n == 30
-    assert args.mixed_precision == "fp16"
+    assert args.mixed_precision == "no"
     assert args.channels_last is False
     assert args.wandb_project == "sensing image segmentation"
     assert args.wandb_entity == "phamdinhanhduy-university-of-information-and-technology"
@@ -56,10 +57,10 @@ def test_channels_last_is_opt_in():
     assert parse_args(["--channels-last"]).channels_last is True
 
 
-def test_unetformer_is_registered_with_resnet18_default():
+def test_unetformer_is_registered_with_paper_swin_b_default():
     assert "unetformer" in available_models()
     args = parse_args(["--model", "unetformer", "--no-pretrained"])
-    assert args.model_variant == "resnet18"
+    assert args.model_variant == "swin-b"
 
 
 def test_pyramidmamba_is_registered_with_published_swin_default():

@@ -87,6 +87,16 @@ def test_performance_helper_uses_high_matmul_precision():
         torch.set_float32_matmul_precision(previous)
 
 
+def test_distributed_batchnorm_syncs_only_for_multiple_processes():
+    from oemseg.engine.trainer import configure_distributed_batchnorm
+
+    single = torch.nn.Sequential(torch.nn.Conv2d(3, 4, 1), torch.nn.BatchNorm2d(4))
+    multi = torch.nn.Sequential(torch.nn.Conv2d(3, 4, 1), torch.nn.BatchNorm2d(4))
+
+    assert isinstance(configure_distributed_batchnorm(single, 1)[1], torch.nn.BatchNorm2d)
+    assert isinstance(configure_distributed_batchnorm(multi, 2)[1], torch.nn.SyncBatchNorm)
+
+
 def test_train_loss_improvement_resets_stale_and_marks_new_best():
     from oemseg.engine.trainer import update_loss_state
 
@@ -244,7 +254,7 @@ def test_train_one_epoch_computes_shared_loss_in_float32_under_autocast():
     assert criterion.dtype == torch.float32
 
 
-def test_train_one_epoch_clips_synchronized_gradients():
+def test_train_one_epoch_does_not_clip_gradients_by_default():
     accelerator = PrecisionProbeAccelerator()
     model = torch.nn.Conv2d(3, 9, 1)
     loader = DataLoader(
@@ -253,7 +263,7 @@ def test_train_one_epoch_clips_synchronized_gradients():
     )
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     train_one_epoch(model, loader, torch.nn.CrossEntropyLoss(), optimizer, accelerator)
-    assert accelerator.clipped
+    assert not accelerator.clipped
 
 
 def test_train_one_epoch_fails_before_step_on_nonfinite_loss():
