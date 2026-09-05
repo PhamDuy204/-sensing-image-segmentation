@@ -40,10 +40,16 @@ def test_auto_loss_resolves_to_model_specific_published_recipe():
         assert parse_args(["--model", model, "--no-pretrained"]).loss == loss
 
 
-def test_unetformer_and_repstdc_accept_explicit_dense_loss_override():
+def test_unetformer_swin_b_accepts_explicit_dense_loss_override():
     assert parse_args(["--model", "unetformer", "--loss", "ce_dice", "--no-pretrained"]).loss == "ce_dice"
     assert parse_args(["--model", "unetformer", "--loss", "soft_ce_dice", "--no-pretrained"]).loss == "soft_ce_dice"
-    assert parse_args(["--model", "repstdc", "--loss", "ce", "--no-pretrained"]).loss == "ce"
+
+
+def test_native_auxiliary_models_reject_overrides_that_drop_supervision():
+    with pytest.raises(SystemExit):
+        parse_args(["--model", "unetformer", "--model-variant", "resnet18", "--loss", "ce_dice", "--no-pretrained"])
+    with pytest.raises(SystemExit):
+        parse_args(["--model", "repstdc", "--loss", "ce", "--no-pretrained"])
 
 
 def test_mask2former_rejects_incompatible_loss_override():

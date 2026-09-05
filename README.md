@@ -1,6 +1,6 @@
 # Modular OpenEarthMap semantic segmentation
 
-A compact research framework for interchangeable semantic-segmentation models on OpenEarthMap. All models share the same data split, optimizer/scheduler plumbing, evaluator, checkpointing, error analysis, W&B tracking, and single-/multi-GPU training engine. Most dense-logit models use the shared CE/Dice loss; UNetFormer keeps GeoSeg's published native objectives (joint soft-CE+Dice for FTUNetFormer/Swin-B, plus auxiliary CE for the ResNet18 variant), and Mask2Former keeps its native Hungarian mask-classification loss.
+A compact research framework for interchangeable semantic-segmentation models on OpenEarthMap. All models share the same data split, optimizer/scheduler plumbing, evaluator, checkpointing, error analysis, W&B tracking, and single-/multi-GPU training engine. `--loss auto` is model-aware, so architectures with native auxiliary/set-prediction objectives are not silently forced through CE+Dice.
 
 OpenEarthMap's official `train.txt` (**3000 labeled images**) is used in full by the accuracy-first default. The public `val.txt` (500 labeled images) is treated as the reported paper **test** set, matching the PyramidMamba paper because the official 1500-image benchmark test masks are not public. By default, checkpoint selection therefore uses minimum training loss; an internal validation split remains available explicitly with `--val-fraction > 0`.
 
@@ -88,9 +88,25 @@ Split interpretation used by this project:
 | Component | CLI names |
 |---|---|
 | Model | `unet`, `unetpp`, `unetformer`, `segformer`, `segnext`, `repstdc`, `mambavision`, `pyramidmamba`, `mask2former` |
-| Loss | `ce`, `dice`, `ce_dice` |
+| Loss | `auto`, `ce`, `dice`, `ce_dice`, `soft_ce_dice`, `unetformer`, `repstdc`, `mask2former` |
 | Optimizer | `adam`, `adamw` |
 | MambaVision decoder | `upernet` |
+
+`--loss auto` resolves to the model-specific benchmark objective:
+
+| Model | Effective loss |
+|---|---|
+| U-Net / U-Net++ | `ce_dice` |
+| UNetFormer Swin-B | `unetformer` = GeoSeg soft-CE + Dice |
+| UNetFormer ResNet18 | `unetformer` = main soft-CE + Dice + `0.4 ×` auxiliary soft-CE |
+| SegFormer-B0 | `ce` |
+| SegNeXt-T | `ce` |
+| RepSTDC-CA | `repstdc` = main OHEM CE + 2 auxiliary OHEM CE + boundary CE + Dice |
+| MambaVision-T | `ce_dice` |
+| PyramidMamba | `ce_dice` |
+| Mask2Former | `mask2former` = native Hungarian class/mask/Dice objective |
+
+For Swin-B UNetFormer, an explicit dense override such as `--loss soft_ce_dice` is allowed. UNetFormer/ResNet18, RepSTDC, and Mask2Former reject incompatible dense overrides because they would drop auxiliary, boundary, or matching supervision.
 
 ### Default experiment
 

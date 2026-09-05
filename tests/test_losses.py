@@ -28,10 +28,16 @@ def test_auto_loss_is_model_specific():
     assert {model: resolve_loss_name("auto", model) for model in expected} == expected
 
 
-def test_unetformer_and_repstdc_allow_explicit_dense_loss_override():
-    assert resolve_loss_name("ce_dice", "unetformer") == "ce_dice"
-    assert resolve_loss_name("soft_ce_dice", "unetformer") == "soft_ce_dice"
-    assert resolve_loss_name("ce", "repstdc") == "ce"
+def test_unetformer_swin_b_allows_explicit_dense_loss_override():
+    assert resolve_loss_name("ce_dice", "unetformer", "swin-b") == "ce_dice"
+    assert resolve_loss_name("soft_ce_dice", "unetformer", "swin-b") == "soft_ce_dice"
+
+
+def test_native_auxiliary_losses_cannot_be_silently_dropped():
+    with pytest.raises(ValueError):
+        resolve_loss_name("ce_dice", "unetformer", "resnet18")
+    with pytest.raises(ValueError):
+        resolve_loss_name("ce", "repstdc", "stdc1-ca")
 
 
 def test_mask2former_rejects_dense_loss_override():

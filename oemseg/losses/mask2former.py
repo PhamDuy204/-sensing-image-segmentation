@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 
@@ -30,6 +31,15 @@ def mask2former_native_loss(model: nn.Module, images: Tensor, targets: Tensor) -
     return output.loss
 
 
+class Mask2FormerReportingLoss(nn.Module):
+    """Cross-entropy diagnostic for positive semantic scores returned by the adapter."""
+
+    def forward(self, scores: Tensor, target: Tensor) -> Tensor:
+        probabilities = scores.clamp_min(1e-8)
+        probabilities = probabilities / probabilities.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        return F.nll_loss(probabilities.log(), target)
+
+
 def build_mask2former_reporting_loss() -> nn.Module:
-    """Dense proxy loss for validation/error-analysis; training stays native."""
-    return nn.CrossEntropyLoss()
+    """Dense diagnostic for validation/error-analysis; training stays native."""
+    return Mask2FormerReportingLoss()

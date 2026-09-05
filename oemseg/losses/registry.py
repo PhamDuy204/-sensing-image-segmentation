@@ -24,7 +24,7 @@ _MODEL_ONLY_LOSSES = {
     "repstdc": "repstdc",
     "mask2former": "mask2former",
 }
-_STRICT_NATIVE_MODELS = {"mask2former": "mask2former"}
+_STRICT_NATIVE_MODELS = {"repstdc": "repstdc", "mask2former": "mask2former"}
 
 
 def normalize_loss_name(name: str) -> str:
@@ -45,7 +45,7 @@ def available_losses() -> tuple[str, ...]:
     )
 
 
-def resolve_loss_name(name: str, model_name: str) -> str:
+def resolve_loss_name(name: str, model_name: str, model_variant: str | None = None) -> str:
     key = normalize_loss_name(name)
     model = normalize_name(model_name)
     if key == "auto":
@@ -60,8 +60,14 @@ def resolve_loss_name(name: str, model_name: str) -> str:
     if required_native is not None and key != required_native:
         raise ValueError(
             f"Model '{model}' requires --loss {required_native}; "
-            f"a dense loss such as '{key}' is not compatible with its set-prediction objective"
+            f"'{key}' would drop architecture-native supervision"
         )
+    if model == "unetformer" and key != "unetformer":
+        variant = normalize_name(model_variant or "")
+        if variant not in {"swin_b", "swin_base", "swinb"}:
+            raise ValueError(
+                "UNetFormer/ResNet18 requires --loss unetformer so its auxiliary head remains supervised"
+            )
     owner = _MODEL_ONLY_LOSSES.get(key)
     if owner is not None and model != owner:
         raise ValueError(f"Loss '{key}' is only valid with --model {owner}")

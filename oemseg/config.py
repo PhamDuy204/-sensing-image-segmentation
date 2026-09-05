@@ -113,7 +113,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.pretrained = True
 
     try:
-        args.loss = resolve_loss_name(args.loss, args.model)
+        args.loss = resolve_loss_name(args.loss, args.model, args.model_variant)
     except ValueError as error:
         parser.error(str(error))
     args.optimizer = normalize_name(args.optimizer)
