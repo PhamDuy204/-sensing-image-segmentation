@@ -211,8 +211,6 @@ def run_training(args) -> Path:
         step_scheduler_with_optimizer=False,
         dataloader_config=DataLoaderConfiguration(
             non_blocking=True,
-            use_seedable_sampler=True,
-            data_seed=args.seed,
         ),
     )
     if accelerator.device.type != "cuda":
