@@ -110,3 +110,10 @@ def test_new_paper_baselines_are_registered_with_published_defaults():
     assert parse_args(["--model", "segnext", "--no-pretrained"]).model_variant == "tiny"
     assert parse_args(["--model", "repstdc", "--no-pretrained"]).model_variant == "stdc1-ca"
     assert parse_args(["--model", "mask2former", "--no-pretrained"]).model_variant == "swin-tiny"
+
+
+def test_gradient_clipping_is_opt_in_and_validated():
+    assert parse_args([]).max_grad_norm == 0.0
+    assert parse_args(["--max-grad-norm", "0.01"]).max_grad_norm == pytest.approx(0.01)
+    with pytest.raises(SystemExit):
+        parse_args(["--max-grad-norm", "-1"])

@@ -71,6 +71,28 @@ class Mask2FormerAdapter(SegmentationModelAdapter):
         self._backbone = backbone or self.model.model.pixel_level_module.encoder
         self.num_classes = num_classes
 
+        # Match the official Mask2Former AdamW recipe: no decay on norm,
+        # embeddings, or Swin positional-bias parameters.
+        norm_types = (
+            nn.BatchNorm1d,
+            nn.BatchNorm2d,
+            nn.BatchNorm3d,
+            nn.SyncBatchNorm,
+            nn.GroupNorm,
+            nn.InstanceNorm1d,
+            nn.InstanceNorm2d,
+            nn.InstanceNorm3d,
+            nn.LayerNorm,
+            nn.LocalResponseNorm,
+        )
+        for module in self.model.modules():
+            for parameter_name, parameter in module.named_parameters(recurse=False):
+                if (
+                    isinstance(module, (*norm_types, nn.Embedding))
+                    or parameter_name in {"relative_position_bias_table", "absolute_pos_embed"}
+                ):
+                    parameter._no_weight_decay = True
+
     @property
     def backbone(self) -> nn.Module:
         return self._backbone

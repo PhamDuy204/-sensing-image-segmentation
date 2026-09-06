@@ -74,6 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--bad-predict-top-n", type=int, default=30)
     parser.add_argument("--grad-accumulation", type=int, default=1)
+    parser.add_argument(
+        "--max-grad-norm",
+        type=float,
+        default=0.0,
+        help="clip gradient norm to this value; 0 disables clipping",
+    )
     parser.add_argument("--mixed-precision", choices=["no", "fp16", "bf16"], default="no")
     parser.add_argument("--channels-last", action="store_true")
     parser.add_argument("--wandb", action="store_true")
@@ -124,6 +130,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--decoder-channels must be >= 1")
     if args.grad_accumulation < 1:
         parser.error("--grad-accumulation must be >= 1")
+    if args.max_grad_norm < 0:
+        parser.error("--max-grad-norm must be >= 0")
     if args.bad_predict_top_n < 1:
         parser.error("--bad-predict-top-n must be >= 1")
     if not 0 <= args.internal_val_fraction < 1:

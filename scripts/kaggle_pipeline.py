@@ -34,6 +34,8 @@ def build_kernel_files(
 ) -> tuple[dict[str, object], dict[str, object]]:
     code_file = f"{slug}.ipynb"
     repo_dir = "/kaggle/tmp/OEM_Segmentation"
+    machine_shape = "NvidiaTeslaP100" if model == "unet" else "NvidiaTeslaT4"
+    accelerator_kind = "P100" if model == "unet" else "T4X2"
     source = [
         "%%bash\n",
         "set -Eeuo pipefail\n",
@@ -46,7 +48,7 @@ def build_kernel_files(
         "git -C \"$REPO_DIR\" checkout --detach FETCH_HEAD\n",
         "cd \"$REPO_DIR\"\n",
         "echo \"repo_head=$(git rev-parse HEAD)\"\n",
-        f"MODEL_NAME={shlex.quote(model)} SMOKE={'1' if smoke else '0'} "
+        f"ACCELERATOR_KIND={accelerator_kind} MODEL_NAME={shlex.quote(model)} SMOKE={'1' if smoke else '0'} "
         "bash scripts/kaggle_paper_repro.sh\n",
     ]
     notebook = {
@@ -75,7 +77,7 @@ def build_kernel_files(
         "is_private": True,
         "enable_gpu": True,
         "enable_internet": True,
-        "machine_shape": "NvidiaTeslaT4",
+        "machine_shape": machine_shape,
         "dataset_sources": [DATASET_SOURCE],
         "competition_sources": [],
         "kernel_sources": [],
@@ -188,6 +190,7 @@ def _foreground(args: argparse.Namespace) -> int:
         "smoke": args.smoke,
         "repo_ref": args.repo_ref,
         "kernel": kernel,
+        "machine_shape": metadata["machine_shape"],
         "run_root": str(run_root),
         "output_dir": str(output_dir),
         "status": "SUBMITTING",
@@ -199,7 +202,15 @@ def _foreground(args: argparse.Namespace) -> int:
     kaggle_env["KAGGLE_API_TOKEN"] = token
     print(f"Submitting {kernel} ({'smoke' if args.smoke else 'full'})")
     _run(
-        [str(kaggle_bin), "kernels", "push", "-p", str(kernel_dir), "--accelerator", "NvidiaTeslaT4"],
+        [
+            str(kaggle_bin),
+            "kernels",
+            "push",
+            "-p",
+            str(kernel_dir),
+            "--accelerator",
+            str(metadata["machine_shape"]),
+        ],
         env=kaggle_env,
     )
     _state_update(state_path, state, status="SUBMITTED")
@@ -236,7 +247,18 @@ def _foreground(args: argparse.Namespace) -> int:
 
     print("Downloading Kaggle outputs", flush=True)
     _run(
-        [str(kaggle_bin), "kernels", "output", kernel, "-p", str(output_dir), "-o", "-q"],
+        [
+            str(kaggle_bin),
+            "kernels",
+            "output",
+            kernel,
+            "-p",
+            str(output_dir),
+            "-o",
+            "-q",
+            "--file-pattern",
+            r"^oem_outputs/",
+        ],
         env=kaggle_env,
     )
     _state_update(state_path, state, status="DOWNLOADED")

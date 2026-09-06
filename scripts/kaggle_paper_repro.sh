@@ -7,6 +7,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-/kaggle/working/oem_outputs}"
 WANDB_ENTITY="${WANDB_ENTITY:-phamdinhanhduy-university-of-information-and-technology}"
 WANDB_PROJECT="${WANDB_PROJECT:-sensing image segmentation}"
 SMOKE="${SMOKE:-0}"
+ACCELERATOR_KIND="${ACCELERATOR_KIND:-T4X2}"
 
 EPOCHS=45
 IMAGE_SIZE=1024
@@ -14,7 +15,35 @@ BATCH_SIZE=1
 GRAD_ACCUMULATION=1
 EVAL_BATCH_SIZE=1
 WORKERS=2
-RUN_NAME="${MODEL_NAME}-paper-repro-t4x2"
+GPU_IDS="0,1"
+EXPECTED_GPU_COUNT=2
+RUN_SUFFIX="t4x2"
+LR=6e-4
+ENCODER_LR=6e-5
+WEIGHT_DECAY=0.01
+MAX_GRAD_NORM=0
+WARMUP_EPOCHS=5
+PATIENCE=5
+
+if [[ "$MODEL_NAME" == "unet" ]]; then
+  BATCH_SIZE=2
+  GPU_IDS="0"
+  EXPECTED_GPU_COUNT=1
+  RUN_SUFFIX="p100"
+elif [[ "$MODEL_NAME" == "mask2former" ]]; then
+  LR=1e-4
+  ENCODER_LR=1e-5
+  WEIGHT_DECAY=0.05
+  MAX_GRAD_NORM=0.01
+  WARMUP_EPOCHS=0
+  PATIENCE=0
+fi
+
+RUN_NAME="${MODEL_NAME}-paper-repro-${RUN_SUFFIX}"
+SMOKE_SUFFIX=""
+[[ "$SMOKE" == "1" ]] && SMOKE_SUFFIX="-smoke"
+RUN_NAME="${RUN_NAME}${SMOKE_SUFFIX}"
+GLOBAL_BATCH=$((BATCH_SIZE * EXPECTED_GPU_COUNT * GRAD_ACCUMULATION))
 
 export TORCH_HOME="${TORCH_HOME:-/kaggle/tmp/torch_cache}"
 export HF_HOME="${HF_HOME:-/kaggle/tmp/hf_cache}"
@@ -25,6 +54,12 @@ case "$MODEL_NAME" in
   unet|unetformer|segformer|segnext|repstdc|mambavision|pyramidmamba|mask2former) ;;
   *) echo "ERROR: unsupported MODEL_NAME=$MODEL_NAME" >&2; exit 2 ;;
 esac
+
+if [[ "$MODEL_NAME" == "unet" ]]; then
+  [[ "$ACCELERATOR_KIND" == "P100" ]] || { echo "ERROR: U-Net reproduction requires P100 single-GPU topology" >&2; exit 2; }
+else
+  [[ "$ACCELERATOR_KIND" == "T4X2" ]] || { echo "ERROR: $MODEL_NAME requires T4x2 in this workflow" >&2; exit 2; }
+fi
 
 if [[ ! -d "$DATA_ROOT" ]]; then
   fallback="/kaggle/input/oem-dataset/OpenEarthMap_Prepared"
@@ -45,11 +80,29 @@ for split, expected in {"train": 3000, "val": 500, "test": 1500}.items():
 print("DATASET_OK")
 PY
 
-python3 - <<'PY'
+if [[ "$MODEL_NAME" == "unet" ]]; then
+  # Kaggle's current default cu128 image omits Pascal/sm_60 kernels used by P100.
+  python3 -m pip install --disable-pip-version-check --upgrade \
+    torch==2.6.0 torchvision==0.21.0 \
+    --index-url https://download.pytorch.org/whl/cu118
+fi
+
+python3 - "$EXPECTED_GPU_COUNT" "$MODEL_NAME" <<'PY'
+import sys
 import torch
-if not torch.cuda.is_available() or torch.cuda.device_count() < 2:
-    raise SystemExit(f"ERROR: need T4 x2; CUDA={torch.cuda.is_available()} count={torch.cuda.device_count()}")
-print("GPUs:", [torch.cuda.get_device_name(i) for i in range(2)])
+expected = int(sys.argv[1])
+model = sys.argv[2]
+count = torch.cuda.device_count()
+if not torch.cuda.is_available() or count < expected:
+    raise SystemExit(f"ERROR: need {expected} GPU(s); CUDA={torch.cuda.is_available()} count={count}")
+# Exercise CUDA, because Kaggle's default P100 image can report CUDA available yet fail on first kernel.
+probe = torch.ones(1, device="cuda")
+if probe.item() != 1:
+    raise SystemExit("ERROR: CUDA compute probe failed")
+if model == "unet" and torch.cuda.get_device_capability(0) == (6, 0) and "sm_60" not in torch.cuda.get_arch_list():
+    raise SystemExit(f"ERROR: installed PyTorch lacks P100/sm_60 kernels: {torch.cuda.get_arch_list()}")
+print("GPUs:", [torch.cuda.get_device_name(i) for i in range(expected)])
+print("torch:", torch.__version__, "cuda:", torch.version.cuda, "arch:", torch.cuda.get_arch_list())
 PY
 
 setup_standard() {
@@ -64,9 +117,9 @@ setup_openmmlab() {
   if command -v conda >/dev/null 2>&1; then
     runner="$(command -v conda)"
   else
-    local bin_dir=/kaggle/working/.micromamba-bin
+    local bin_dir=/kaggle/tmp/.micromamba-bin
     local mm="$bin_dir/micromamba"
-    export MAMBA_ROOT_PREFIX=/kaggle/working/.micromamba
+    export MAMBA_ROOT_PREFIX=/kaggle/tmp/.micromamba
     mkdir -p "$bin_dir" "$MAMBA_ROOT_PREFIX"
     if [[ ! -x "$mm" ]]; then
       local tmp
@@ -110,17 +163,25 @@ printf '%s\n' \
   "model=$MODEL_NAME" \
   "epochs=$EPOCHS" \
   "image_size=$IMAGE_SIZE" \
+  "accelerator=$ACCELERATOR_KIND" \
+  "gpus=$GPU_IDS" \
   "batch_per_gpu=$BATCH_SIZE" \
-  "global_batch=2" \
+  "global_batch=$GLOBAL_BATCH" \
   "grad_accumulation=$GRAD_ACCUMULATION" \
   "precision=fp32" \
+  "lr=$LR" \
+  "encoder_lr=$ENCODER_LR" \
+  "weight_decay=$WEIGHT_DECAY" \
+  "max_grad_norm=$MAX_GRAD_NORM" \
+  "warmup_epochs=$WARMUP_EPOCHS" \
+  "patience=$PATIENCE" \
   "internal_val_fraction=0" \
   "checkpoint_selection=train_loss" \
   "loss=auto" \
   "wandb=offline"
 
 "${RUN_PYTHON[@]}" scripts/launch.py distributed \
-  --gpus 0,1 \
+  --gpus "$GPU_IDS" \
   --model "$MODEL_NAME" \
   -- \
   --data-root "$DATA_ROOT" \
@@ -133,13 +194,14 @@ printf '%s\n' \
   --eval-batch-size "$EVAL_BATCH_SIZE" \
   --workers "$WORKERS" \
   --optimizer adamw \
-  --lr 6e-4 \
-  --encoder-lr 6e-5 \
-  --weight-decay 0.01 \
-  --warmup-epochs 5 \
+  --lr "$LR" \
+  --encoder-lr "$ENCODER_LR" \
+  --weight-decay "$WEIGHT_DECAY" \
+  --max-grad-norm "$MAX_GRAD_NORM" \
+  --warmup-epochs "$WARMUP_EPOCHS" \
   --poly-power 0.9 \
   --val-fraction 0 \
-  --patience 5 \
+  --patience "$PATIENCE" \
   --mixed-precision no \
   --loss auto \
   --wandb \

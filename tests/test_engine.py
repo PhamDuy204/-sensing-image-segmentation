@@ -285,3 +285,22 @@ def test_train_one_epoch_fails_before_step_on_nonfinite_loss():
     else:
         raise AssertionError("non-finite loss must stop training")
     assert optimizer.steps == 0
+
+
+def test_train_one_epoch_clips_gradients_only_when_requested():
+    accelerator = PrecisionProbeAccelerator()
+    model = torch.nn.Conv2d(3, 9, 1)
+    loader = DataLoader(
+        TensorDataset(torch.randn(1, 3, 8, 8), torch.randint(0, 9, (1, 8, 8))),
+        batch_size=1,
+    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    train_one_epoch(
+        model,
+        loader,
+        torch.nn.CrossEntropyLoss(),
+        optimizer,
+        accelerator,
+        max_grad_norm=0.01,
+    )
+    assert accelerator.clipped

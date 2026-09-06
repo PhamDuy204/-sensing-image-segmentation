@@ -97,6 +97,7 @@ def train_one_epoch(
     description: str = "train",
     channels_last: bool = False,
     native_loss: bool = False,
+    max_grad_norm: float = 0.0,
 ) -> float:
     model.train()
     optimizer.zero_grad(set_to_none=True)
@@ -127,6 +128,8 @@ def train_one_epoch(
                 )
 
             accelerator.backward(loss)
+            if max_grad_norm > 0 and accelerator.sync_gradients:
+                accelerator.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         loss_sum += loss.detach().float() * targets.shape[0]
@@ -312,6 +315,7 @@ def run_training(args) -> Path:
                 description=f"epoch {epoch}/{epochs}",
                 channels_last=args.channels_last,
                 native_loss=native_loss,
+                max_grad_norm=args.max_grad_norm,
             )
             scheduler.step()
             record: dict[str, float | int] = {

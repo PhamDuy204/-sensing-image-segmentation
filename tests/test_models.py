@@ -390,3 +390,26 @@ def test_pyramidmamba_repairs_zeroed_dt_projection_and_runs_mamba_block_in_float
     assert mamba.input_dtype == torch.float32
     assert logits.dtype == torch.float32
     assert torch.isfinite(logits).all()
+
+
+def test_mask2former_marks_official_norm_embedding_and_position_parameters_no_decay():
+    from torch import nn
+    from oemseg.models.mask2former import Mask2FormerAdapter
+
+    class FakeMask2Former(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.encoder = nn.Sequential(nn.Conv2d(3, 4, 1), nn.GroupNorm(1, 4))
+            self.norm = nn.LayerNorm(4)
+            self.embedding = nn.Embedding(4, 4)
+            self.relative_position_bias_table = nn.Parameter(torch.randn(4, 4))
+
+    fake = FakeMask2Former()
+    Mask2FormerAdapter(pretrained=False, model=fake, backbone=fake.encoder)
+
+    assert not getattr(fake.encoder[0].weight, "_no_weight_decay", False)
+    assert getattr(fake.encoder[1].weight, "_no_weight_decay", False)
+    assert getattr(fake.encoder[1].bias, "_no_weight_decay", False)
+    assert getattr(fake.norm.weight, "_no_weight_decay", False)
+    assert getattr(fake.embedding.weight, "_no_weight_decay", False)
+    assert getattr(fake.relative_position_bias_table, "_no_weight_decay", False)

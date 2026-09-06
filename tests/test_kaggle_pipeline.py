@@ -12,7 +12,8 @@ def test_kaggle_paper_recipe_is_accuracy_first():
         'BATCH_SIZE=1',
         'GRAD_ACCUMULATION=1',
         '--val-fraction 0',
-        '--patience 5',
+        'PATIENCE=5',
+        '--patience "$PATIENCE"',
         '--mixed-precision no',
         '--loss auto',
         '--wandb-mode offline',
@@ -39,7 +40,7 @@ def test_kernel_files_enable_private_t4_and_keep_secrets_local():
     assert metadata["is_private"] is True
     assert metadata["enable_gpu"] is True
     assert metadata["enable_internet"] is True
-    assert metadata["machine_shape"] == "NvidiaTeslaT4"
+    assert metadata["machine_shape"] == "NvidiaTeslaP100"
     assert metadata["dataset_sources"] == ["duy18102004/oem-dataset"]
 
     source = "\n".join(notebook["cells"][0]["source"])
@@ -87,3 +88,49 @@ def test_generated_notebook_keeps_repository_out_of_kaggle_outputs():
     source = "\n".join(notebook["cells"][0]["source"])
     assert "REPO_DIR=/kaggle/tmp/OEM_Segmentation" in source
     assert "REPO_DIR=/kaggle/working/OEM_Segmentation" not in source
+
+
+def test_unet_repro_uses_single_p100_but_multi_gpu_models_keep_t4x2():
+    from scripts.kaggle_pipeline import build_kernel_files
+
+    _, unet = build_kernel_files(
+        owner="duy18102004", slug="oem-unet-paper-repro", model="unet", smoke=False, repo_ref="main"
+    )
+    _, mask2former = build_kernel_files(
+        owner="duy18102004", slug="oem-mask2former-paper-repro", model="mask2former", smoke=False, repo_ref="main"
+    )
+
+    assert unet["machine_shape"] == "NvidiaTeslaP100"
+    assert mask2former["machine_shape"] == "NvidiaTeslaT4"
+
+
+def test_kaggle_repro_script_distinguishes_smoke_and_keeps_temp_env_out_of_outputs():
+    script = (ROOT / "scripts/kaggle_paper_repro.sh").read_text()
+    pipeline = (ROOT / "scripts/kaggle_pipeline.py").read_text()
+
+    assert 'RUN_NAME="${RUN_NAME}${SMOKE_SUFFIX}"' in script
+    assert 'SMOKE_SUFFIX="-smoke"' in script
+    assert "/kaggle/tmp/.micromamba" in script
+    assert "/kaggle/working/.micromamba" not in script
+    assert '"--file-pattern"' in pipeline
+    assert 'r"^oem_outputs/"' in pipeline
+
+
+def test_unet_p100_bootstrap_and_mask2former_optimizer_recipe_are_explicit():
+    script = (ROOT / "scripts/kaggle_paper_repro.sh").read_text()
+
+    for expected in (
+        "torch==2.6.0",
+        "torchvision==0.21.0",
+        "https://download.pytorch.org/whl/cu118",
+        '[[ "$MODEL_NAME" == "unet" ]]',
+        "BATCH_SIZE=2",
+        'GPU_IDS="0"',
+        "LR=1e-4",
+        "ENCODER_LR=1e-5",
+        "WEIGHT_DECAY=0.05",
+        "MAX_GRAD_NORM=0.01",
+        "WARMUP_EPOCHS=0",
+        "PATIENCE=0",
+    ):
+        assert expected in script
