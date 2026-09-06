@@ -8,6 +8,8 @@ WANDB_ENTITY="${WANDB_ENTITY:-phamdinhanhduy-university-of-information-and-techn
 WANDB_PROJECT="${WANDB_PROJECT:-sensing image segmentation}"
 SMOKE="${SMOKE:-0}"
 ACCELERATOR_KIND="${ACCELERATOR_KIND:-T4X2}"
+CHUNK_END_EPOCH="${CHUNK_END_EPOCH:-0}"
+RESUME_FROM_INPUT="${RESUME_FROM_INPUT:-0}"
 
 EPOCHS=45
 IMAGE_SIZE=1024
@@ -24,6 +26,11 @@ WEIGHT_DECAY=0.01
 MAX_GRAD_NORM=0
 WARMUP_EPOCHS=5
 PATIENCE=5
+EVAL_START_EPOCH=30
+
+if (( CHUNK_END_EPOCH > 0 )); then
+  EVAL_START_EPOCH=44
+fi
 
 if [[ "$MODEL_NAME" == "unet" ]]; then
   BATCH_SIZE=2
@@ -156,6 +163,25 @@ case "$MODEL_NAME" in
     ;;
 esac
 
+RESUME_ARGS=()
+if [[ "$RESUME_FROM_INPUT" == "1" ]]; then
+  mapfile -t RESUME_CANDIDATES < <(
+    find /kaggle/input -type f -path "*/oem_outputs/${RUN_NAME}/last.pt" -print
+  )
+  [[ ${#RESUME_CANDIDATES[@]} -eq 1 ]] || {
+    echo "ERROR: expected exactly one resume checkpoint, found ${#RESUME_CANDIDATES[@]}" >&2
+    printf '%s\n' "${RESUME_CANDIDATES[@]}" >&2
+    exit 4
+  }
+  RESUME_CHECKPOINT="${RESUME_CANDIDATES[0]}"
+  RESUME_ARGS=(--resume-from "$RESUME_CHECKPOINT")
+fi
+
+CHUNK_ARGS=()
+if (( CHUNK_END_EPOCH > 0 )); then
+  CHUNK_ARGS=(--stop-after-epoch "$CHUNK_END_EPOCH")
+fi
+
 SMOKE_ARGS=()
 [[ "$SMOKE" == "1" ]] && SMOKE_ARGS=(--smoke)
 
@@ -175,6 +201,9 @@ printf '%s\n' \
   "max_grad_norm=$MAX_GRAD_NORM" \
   "warmup_epochs=$WARMUP_EPOCHS" \
   "patience=$PATIENCE" \
+  "eval_start_epoch=$EVAL_START_EPOCH" \
+  "chunk_end_epoch=$CHUNK_END_EPOCH" \
+  "resume_from_input=$RESUME_FROM_INPUT" \
   "internal_val_fraction=0" \
   "checkpoint_selection=train_loss" \
   "loss=auto" \
@@ -200,6 +229,7 @@ printf '%s\n' \
   --max-grad-norm "$MAX_GRAD_NORM" \
   --warmup-epochs "$WARMUP_EPOCHS" \
   --poly-power 0.9 \
+  --eval-start-epoch "$EVAL_START_EPOCH" \
   --val-fraction 0 \
   --patience "$PATIENCE" \
   --mixed-precision no \
@@ -208,6 +238,8 @@ printf '%s\n' \
   --wandb-mode offline \
   --wandb-entity "$WANDB_ENTITY" \
   --wandb-project "$WANDB_PROJECT" \
+  "${RESUME_ARGS[@]}" \
+  "${CHUNK_ARGS[@]}" \
   "${SMOKE_ARGS[@]}"
 
 find "$OUTPUT_ROOT" -name best_checkpoint_summary.json -print -exec cat {} \; || true

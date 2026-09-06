@@ -134,3 +134,75 @@ def test_unet_p100_bootstrap_and_mask2former_optimizer_recipe_are_explicit():
         "PATIENCE=0",
     ):
         assert expected in script
+
+
+def test_cancel_acknowledged_is_a_terminal_status():
+    from scripts.kaggle_pipeline import TERMINAL_STATUSES, normalize_status
+
+    assert normalize_status(
+        'foo/bar has status "KernelWorkerStatus.CANCEL_ACKNOWLEDGED"'
+    ) == "CANCEL_ACKNOWLEDGED"
+    assert "CANCEL_ACKNOWLEDGED" in TERMINAL_STATUSES
+
+
+def test_chunk_end_epochs_cover_full_training_without_crossing_chunk_size():
+    from scripts.kaggle_pipeline import chunk_end_epochs
+
+    assert chunk_end_epochs(45, 15) == [15, 30, 45]
+    assert chunk_end_epochs(45, 20) == [20, 40, 45]
+
+
+def test_chunked_kernel_attaches_previous_output_and_requests_resume():
+    from scripts.kaggle_pipeline import build_kernel_files
+
+    notebook, metadata = build_kernel_files(
+        owner="ovnduytrng",
+        slug="oem-unetformer-paper-repro-part2",
+        model="unetformer",
+        smoke=False,
+        repo_ref="main",
+        chunk_end_epoch=30,
+        previous_kernel="ovnduytrng/oem-unetformer-paper-repro-part1",
+    )
+
+    assert metadata["kernel_sources"] == [
+        "ovnduytrng/oem-unetformer-paper-repro-part1"
+    ]
+    source = "\n".join(notebook["cells"][0]["source"])
+    assert "CHUNK_END_EPOCH=30" in source
+    assert "RESUME_FROM_INPUT=1" in source
+
+
+def test_chunked_repro_script_resumes_checkpoint_and_defers_eval_to_final_epoch():
+    script = (ROOT / "scripts/kaggle_paper_repro.sh").read_text()
+
+    for expected in (
+        'CHUNK_END_EPOCH="${CHUNK_END_EPOCH:-0}"',
+        'RESUME_FROM_INPUT="${RESUME_FROM_INPUT:-0}"',
+        '--stop-after-epoch "$CHUNK_END_EPOCH"',
+        '--resume-from "$RESUME_CHECKPOINT"',
+        'EVAL_START_EPOCH=44',
+        '--eval-start-epoch "$EVAL_START_EPOCH"',
+        '*/oem_outputs/${RUN_NAME}/last.pt',
+    ):
+        assert expected in script
+
+
+def test_wandb_sync_command_can_append_chunks_to_one_run(tmp_path):
+    from scripts.kaggle_pipeline import wandb_sync_command
+
+    command = wandb_sync_command(
+        tmp_path / "wandb",
+        tmp_path / "offline-run-abc",
+        target_id="deadbeef",
+        append=True,
+    )
+    assert command == [
+        str(tmp_path / "wandb"),
+        "sync",
+        "--legacy",
+        "--id",
+        "deadbeef",
+        "--append",
+        str(tmp_path / "offline-run-abc"),
+    ]

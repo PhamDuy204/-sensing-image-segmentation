@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import shutil
 from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime
@@ -18,7 +19,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from oemseg.data.loaders import build_loaders, write_split_manifests
-from oemseg.engine.checkpoint import save_checkpoint
+from oemseg.engine.checkpoint import restore_checkpoint, save_checkpoint
 from oemseg.engine.error_analysis import write_best_checkpoint_analysis, write_error_analysis
 from oemseg.engine.evaluator import evaluate
 from oemseg.losses.registry import build_loss
@@ -85,6 +86,25 @@ def flatten_best_metrics(split: str, result) -> dict[str, float]:
         f"best/{key}": value
         for key, value in flatten_metrics(split, result.loss, result.metrics).items()
     }
+
+
+def prepare_resume_files(resume_checkpoint: Path, run_dir: Path) -> None:
+    previous = resume_checkpoint.parent
+    for name in ("metrics.jsonl", "best_train_loss.pt", "best_val_miou.pt"):
+        source = previous / name
+        if source.exists():
+            shutil.copy2(source, run_dir / name)
+
+
+def training_epoch_window(
+    *, total_epochs: int, stop_after_epoch: int | None, resume_epoch: int
+) -> tuple[range, bool]:
+    end_epoch = min(total_epochs, stop_after_epoch or total_epochs)
+    if resume_epoch >= end_epoch:
+        raise ValueError(
+            f"resume checkpoint already reached epoch {resume_epoch}, chunk ends at {end_epoch}"
+        )
+    return range(resume_epoch + 1, end_epoch + 1), end_epoch < total_epochs
 
 
 def train_one_epoch(
@@ -239,6 +259,21 @@ def run_training(args) -> Path:
             model, optimizer, loaders.train, loaders.test, scheduler
         )
 
+    resume_checkpoint = None
+    if args.resume_from is not None:
+        if accelerator.is_main_process:
+            prepare_resume_files(args.resume_from, run_dir)
+        accelerator.wait_for_everyone()
+        resume_checkpoint = restore_checkpoint(
+            args.resume_from,
+            accelerator.unwrap_model(model),
+            optimizer,
+            scheduler,
+            args,
+            world_size=accelerator.num_processes,
+            map_location=accelerator.device,
+        )
+
     wandb_run = None
     if args.wandb and accelerator.is_main_process:
         import wandb
@@ -266,6 +301,49 @@ def run_training(args) -> Path:
         parameter_count,
     )
 
+    has_validation = loaders.internal_val is not None
+    restored_state = (
+        resume_checkpoint.get("training_state", {})
+        if isinstance(resume_checkpoint, dict)
+        else {}
+    )
+    best_train_loss = float(restored_state.get("best_train_loss", math.inf))
+    best_train_epoch = restored_state.get("best_train_epoch")
+    best_val_miou = float(restored_state.get("best_val_miou", -math.inf))
+    best_val_epoch = restored_state.get("best_val_epoch")
+    best_test_miou = float(restored_state.get("best_test_miou", -math.inf))
+    best_test_epoch = restored_state.get("best_test_epoch")
+    final_test_miou = float(restored_state.get("final_test_miou", float("nan")))
+    train_stale = int(restored_state.get("train_stale", 0))
+    val_stale = int(restored_state.get("val_stale", 0))
+    resume_epoch = int(resume_checkpoint.get("epoch", 0)) if resume_checkpoint else 0
+    epoch_range, is_chunk_boundary = training_epoch_window(
+        total_epochs=epochs,
+        stop_after_epoch=args.stop_after_epoch,
+        resume_epoch=resume_epoch,
+    )
+    max_batches = 1 if args.smoke else None
+    metadata = {
+        "format_version": 5,
+        "model_name": args.model,
+        "model_variant": args.model_variant,
+        "world_size": accelerator.num_processes,
+        "selection_mode": "validation" if has_validation else "train_loss",
+    }
+
+    def training_state() -> dict[str, object]:
+        return {
+            "best_train_loss": best_train_loss,
+            "best_train_epoch": best_train_epoch,
+            "best_val_miou": best_val_miou,
+            "best_val_epoch": best_val_epoch,
+            "best_test_miou": best_test_miou,
+            "best_test_epoch": best_test_epoch,
+            "final_test_miou": final_test_miou,
+            "train_stale": train_stale,
+            "val_stale": val_stale,
+        }
+
     def save(name: str, epoch: int) -> None:
         if not accelerator.is_main_process:
             return
@@ -278,33 +356,20 @@ def run_training(args) -> Path:
             args,
             metadata,
             model_state_dict=accelerator.get_state_dict(model),
+            training_state=training_state(),
         )
 
-    has_validation = loaders.internal_val is not None
-    best_train_loss = math.inf
-    best_train_epoch = None
-    best_val_miou = -math.inf
-    best_val_epoch = None
-    best_test_miou = -math.inf
-    best_test_epoch = None
-    final_test_miou = float("nan")
-    train_stale = 0
-    val_stale = 0
-    max_batches = 1 if args.smoke else None
-    metadata = {
-        "format_version": 4,
-        "model_name": args.model,
-        "model_variant": args.model_variant,
-        "world_size": accelerator.num_processes,
-        "selection_mode": "validation" if has_validation else "train_loss",
-    }
+    if resume_checkpoint is not None:
+        logger.info("resumed_from=%s epoch=%d", args.resume_from, resume_epoch)
+
     metrics_context = (
         (run_dir / "metrics.jsonl").open("a", buffering=1)
         if accelerator.is_main_process
         else nullcontext(None)
     )
+    early_stopped = False
     with metrics_context as metrics_file:
-        for epoch in range(1, epochs + 1):
+        for epoch in epoch_range:
             train_loss = train_one_epoch(
                 model=model,
                 loader=loaders.train,
@@ -425,7 +490,31 @@ def run_training(args) -> Path:
                     args.patience,
                     "validation" if has_validation else "train_loss",
                 )
+                early_stopped = True
                 break
+
+    completed_epoch = epoch
+    if is_chunk_boundary and not early_stopped:
+        if accelerator.is_main_process:
+            (run_dir / "chunk_state.json").write_text(
+                json.dumps(
+                    {
+                        "epoch": completed_epoch,
+                        "total_epochs": epochs,
+                        "complete": False,
+                        "reason": "chunk_boundary",
+                    },
+                    indent=2,
+                )
+            )
+        if wandb_run:
+            wandb_run.summary.update(
+                {"chunk/epoch": completed_epoch, "chunk/complete": False}
+            )
+            wandb_run.finish()
+        accelerator.wait_for_everyone()
+        logger.info("chunk_complete epoch=%d output=%s", completed_epoch, run_dir)
+        return run_dir
 
     checkpoint_name, selected_epoch, selection_mode, selection_metric = selected_checkpoint(
         has_validation, best_train_epoch, best_val_epoch
@@ -559,6 +648,18 @@ def run_training(args) -> Path:
         summary["best/test_below_mean_count"] = best_checkpoint_stats["test"]["below_mean_count"]
         wandb_run.summary.update(summary)
         wandb_run.finish()
+    if accelerator.is_main_process:
+        (run_dir / "chunk_state.json").write_text(
+            json.dumps(
+                {
+                    "epoch": completed_epoch,
+                    "total_epochs": epochs,
+                    "complete": True,
+                    "reason": "early_stop" if early_stopped else "epochs_complete",
+                },
+                indent=2,
+            )
+        )
     accelerator.wait_for_everyone()
     logger.info("run_complete output: %s", run_dir)
     return run_dir

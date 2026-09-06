@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,11 +27,24 @@ MODELS = (
     "pyramidmamba",
     "mask2former",
 )
-TERMINAL_STATUSES = {"COMPLETE", "ERROR", "CANCELLED"}
+TERMINAL_STATUSES = {"COMPLETE", "ERROR", "CANCELLED", "CANCEL_ACKNOWLEDGED"}
+
+
+def chunk_end_epochs(total_epochs: int, chunk_epochs: int) -> list[int]:
+    if total_epochs < 1 or chunk_epochs < 1:
+        raise ValueError("total_epochs and chunk_epochs must be >= 1")
+    return list(range(chunk_epochs, total_epochs, chunk_epochs)) + [total_epochs]
 
 
 def build_kernel_files(
-    *, owner: str, slug: str, model: str, smoke: bool, repo_ref: str
+    *,
+    owner: str,
+    slug: str,
+    model: str,
+    smoke: bool,
+    repo_ref: str,
+    chunk_end_epoch: int | None = None,
+    previous_kernel: str | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     code_file = f"{slug}.ipynb"
     repo_dir = "/kaggle/tmp/OEM_Segmentation"
@@ -48,8 +62,14 @@ def build_kernel_files(
         "git -C \"$REPO_DIR\" checkout --detach FETCH_HEAD\n",
         "cd \"$REPO_DIR\"\n",
         "echo \"repo_head=$(git rev-parse HEAD)\"\n",
-        f"ACCELERATOR_KIND={accelerator_kind} MODEL_NAME={shlex.quote(model)} SMOKE={'1' if smoke else '0'} "
-        "bash scripts/kaggle_paper_repro.sh\n",
+        (
+            f"ACCELERATOR_KIND={accelerator_kind} "
+            f"MODEL_NAME={shlex.quote(model)} "
+            f"SMOKE={'1' if smoke else '0'} "
+            f"CHUNK_END_EPOCH={chunk_end_epoch or 0} "
+            f"RESUME_FROM_INPUT={'1' if previous_kernel else '0'} "
+            "bash scripts/kaggle_paper_repro.sh\n"
+        ),
     ]
     notebook = {
         "cells": [
@@ -80,7 +100,7 @@ def build_kernel_files(
         "machine_shape": machine_shape,
         "dataset_sources": [DATASET_SOURCE],
         "competition_sources": [],
-        "kernel_sources": [],
+        "kernel_sources": [previous_kernel] if previous_kernel else [],
         "model_sources": [],
     }
     return notebook, metadata
@@ -89,6 +109,7 @@ def build_kernel_files(
 def normalize_status(text: str) -> str:
     upper = text.upper()
     for status in (
+        "CANCEL_ACKNOWLEDGED",
         "CANCEL_REQUESTED",
         "COMPLETE",
         "CANCELLED",
@@ -139,13 +160,36 @@ def _tool(client_dir: Path, name: str) -> Path:
     return path
 
 
-def _sync_wandb(wandb_bin: Path, output_dir: Path) -> list[str]:
+def wandb_sync_command(
+    wandb_bin: Path,
+    run: Path,
+    *,
+    target_id: str | None = None,
+    append: bool = False,
+) -> list[str]:
+    command = [str(wandb_bin), "sync"]
+    if target_id is not None:
+        command.append("--legacy")
+        command += ["--id", target_id]
+    if append:
+        command.append("--append")
+    command.append(str(run))
+    return command
+
+
+def _sync_wandb(
+    wandb_bin: Path,
+    output_dir: Path,
+    *,
+    target_id: str | None = None,
+    append: bool = False,
+) -> list[str]:
     runs = find_offline_runs(output_dir)
     if not runs:
         raise RuntimeError(f"no offline W&B runs found under {output_dir}")
     synced = []
     for run in runs:
-        _run([str(wandb_bin), "sync", str(run)])
+        _run(wandb_sync_command(wandb_bin, run, target_id=target_id, append=append))
         synced.append(str(run))
     return synced
 
@@ -156,18 +200,21 @@ def _state_update(path: Path, state: dict[str, object], **updates: object) -> No
     _write_json(path, state)
 
 
-def _foreground(args: argparse.Namespace) -> int:
-    token_file = args.token_file.expanduser().resolve()
-    owner, token = _load_account(token_file)
-    client_dir = args.client_dir.expanduser().resolve()
-    kaggle_bin = _tool(client_dir, "kaggle")
-    wandb_bin = _tool(client_dir, "wandb")
-
-    suffix = "-smoke" if args.smoke else ""
-    slug = args.slug or f"oem-{args.model}-paper-repro{suffix}"
+def _run_kernel_once(
+    *,
+    args: argparse.Namespace,
+    owner: str,
+    token: str,
+    kaggle_bin: Path,
+    wandb_bin: Path,
+    slug: str,
+    run_root: Path,
+    chunk_end_epoch: int | None = None,
+    previous_kernel: str | None = None,
+    wandb_target_id: str | None = None,
+    wandb_append: bool = False,
+) -> dict[str, object]:
     kernel = f"{owner}/{slug}"
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_root = args.state_root.expanduser().resolve() / slug / timestamp
     kernel_dir = run_root / "kernel"
     output_dir = run_root / "output"
     kernel_dir.mkdir(parents=True)
@@ -179,6 +226,8 @@ def _foreground(args: argparse.Namespace) -> int:
         model=args.model,
         smoke=args.smoke,
         repo_ref=args.repo_ref,
+        chunk_end_epoch=chunk_end_epoch,
+        previous_kernel=previous_kernel,
     )
     notebook_path = kernel_dir / str(metadata["code_file"])
     _write_json(notebook_path, notebook)
@@ -191,6 +240,8 @@ def _foreground(args: argparse.Namespace) -> int:
         "repo_ref": args.repo_ref,
         "kernel": kernel,
         "machine_shape": metadata["machine_shape"],
+        "chunk_end_epoch": chunk_end_epoch,
+        "previous_kernel": previous_kernel,
         "run_root": str(run_root),
         "output_dir": str(output_dir),
         "status": "SUBMITTING",
@@ -264,11 +315,120 @@ def _foreground(args: argparse.Namespace) -> int:
     _state_update(state_path, state, status="DOWNLOADED")
 
     print("Syncing offline W&B run(s)", flush=True)
-    synced = _sync_wandb(wandb_bin, output_dir)
+    synced = _sync_wandb(
+        wandb_bin,
+        output_dir,
+        target_id=wandb_target_id,
+        append=wandb_append,
+    )
     _state_update(state_path, state, status="SYNCED", synced_wandb_runs=synced)
     print(f"DONE: {kernel}; synced {len(synced)} W&B run(s); state={state_path}")
-    return 0
+    return {
+        "kernel": kernel,
+        "output_dir": output_dir,
+        "state_path": state_path,
+        "synced_wandb_runs": synced,
+    }
 
+
+def _foreground(args: argparse.Namespace) -> int:
+    token_file = args.token_file.expanduser().resolve()
+    owner, token = _load_account(token_file)
+    client_dir = args.client_dir.expanduser().resolve()
+    kaggle_bin = _tool(client_dir, "kaggle")
+    wandb_bin = _tool(client_dir, "wandb")
+
+    suffix = "-smoke" if args.smoke else ""
+    base_slug = args.slug or f"oem-{args.model}-paper-repro{suffix}"
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    state_root = args.state_root.expanduser().resolve()
+
+    if not args.chunk_epochs:
+        run_root = state_root / base_slug / timestamp
+        _run_kernel_once(
+            args=args,
+            owner=owner,
+            token=token,
+            kaggle_bin=kaggle_bin,
+            wandb_bin=wandb_bin,
+            slug=base_slug,
+            run_root=run_root,
+        )
+        return 0
+
+    run_root = state_root / base_slug / timestamp
+    run_root.mkdir(parents=True)
+    state_path = run_root / "state.json"
+    wandb_target_id = uuid.uuid4().hex[:8]
+    state: dict[str, object] = {
+        "model": args.model,
+        "smoke": args.smoke,
+        "repo_ref": args.repo_ref,
+        "chunk_epochs": args.chunk_epochs,
+        "wandb_run_id": wandb_target_id,
+        "run_root": str(run_root),
+        "status": "CHUNKING",
+        "chunks": [],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _state_update(state_path, state)
+
+    previous_kernel = None
+    chunks: list[dict[str, object]] = []
+    for part, end_epoch in enumerate(chunk_end_epochs(45, args.chunk_epochs), start=1):
+        slug = f"{base_slug}-part{part}"
+        part_root = run_root / f"part-{part:02d}"
+        _state_update(
+            state_path,
+            state,
+            status=f"PART_{part}_SUBMITTING",
+            active_part=part,
+            active_kernel=f"{owner}/{slug}",
+        )
+        result = _run_kernel_once(
+            args=args,
+            owner=owner,
+            token=token,
+            kaggle_bin=kaggle_bin,
+            wandb_bin=wandb_bin,
+            slug=slug,
+            run_root=part_root,
+            chunk_end_epoch=end_epoch,
+            previous_kernel=previous_kernel,
+            wandb_target_id=wandb_target_id,
+            wandb_append=part > 1,
+        )
+        markers = list(Path(result["output_dir"]).rglob("chunk_state.json"))
+        if len(markers) != 1:
+            raise RuntimeError(
+                f"expected exactly one chunk_state.json for {result['kernel']}, got {len(markers)}"
+            )
+        chunk_state = json.loads(markers[0].read_text())
+        chunks.append(
+            {
+                "part": part,
+                "kernel": result["kernel"],
+                "end_epoch": end_epoch,
+                "chunk_state": chunk_state,
+            }
+        )
+        complete = bool(chunk_state.get("complete"))
+        _state_update(
+            state_path,
+            state,
+            status="SYNCED" if complete else f"PART_{part}_SYNCED",
+            chunks=chunks,
+            completed_epoch=chunk_state.get("epoch"),
+        )
+        if complete:
+            print(
+                f"DONE: {args.model} completed at epoch {chunk_state.get('epoch')} "
+                f"across {part} Kaggle part(s); state={state_path}"
+            )
+            return 0
+        previous_kernel = str(result["kernel"])
+
+    raise RuntimeError(f"chunk plan ended without a completed training marker: {state_path}")
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -277,6 +437,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detach", action="store_true", help="run the watcher in the background")
     parser.add_argument("--repo-ref", default="main", help="Git branch/tag/SHA fetched by the Kaggle notebook")
     parser.add_argument("--slug", default=None)
+    parser.add_argument(
+        "--chunk-epochs",
+        type=int,
+        default=0,
+        help="split a 45-epoch paper run into committed Kaggle parts; 0 disables chunking",
+    )
     parser.add_argument("--poll-seconds", type=int, default=60)
     parser.add_argument(
         "--token-file",
@@ -301,6 +467,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(raw)
     if args.poll_seconds < 1:
         raise SystemExit("--poll-seconds must be >= 1")
+    if args.chunk_epochs < 0:
+        raise SystemExit("--chunk-epochs must be >= 0")
+    if args.smoke and args.chunk_epochs:
+        raise SystemExit("--chunk-epochs is only valid for full runs")
     if not args.detach:
         return _foreground(args)
 

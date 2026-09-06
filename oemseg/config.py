@@ -72,6 +72,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="fraction of official train used for internal validation; 0 selects checkpoints by train loss",
     )
     parser.add_argument("--patience", type=int, default=5)
+    parser.add_argument("--resume-from", type=Path, default=None)
+    parser.add_argument(
+        "--stop-after-epoch",
+        type=int,
+        default=None,
+        help="stop cleanly after this absolute epoch so a later run can resume",
+    )
     parser.add_argument("--bad-predict-top-n", type=int, default=30)
     parser.add_argument("--grad-accumulation", type=int, default=1)
     parser.add_argument(
@@ -130,6 +137,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--decoder-channels must be >= 1")
     if args.grad_accumulation < 1:
         parser.error("--grad-accumulation must be >= 1")
+    if args.resume_from is not None and not args.resume_from.is_file():
+        parser.error(f"--resume-from does not exist: {args.resume_from}")
+    if args.stop_after_epoch is not None and not 1 <= args.stop_after_epoch <= args.epochs:
+        parser.error("--stop-after-epoch must be in [1, --epochs]")
     if args.max_grad_norm < 0:
         parser.error("--max-grad-norm must be >= 0")
     if args.bad_predict_top_n < 1:

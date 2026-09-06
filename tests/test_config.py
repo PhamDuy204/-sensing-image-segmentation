@@ -117,3 +117,21 @@ def test_gradient_clipping_is_opt_in_and_validated():
     assert parse_args(["--max-grad-norm", "0.01"]).max_grad_norm == pytest.approx(0.01)
     with pytest.raises(SystemExit):
         parse_args(["--max-grad-norm", "-1"])
+
+
+def test_resume_and_chunk_cli_options_are_validated(tmp_path):
+    checkpoint = tmp_path / "last.pt"
+    checkpoint.write_bytes(b"x")
+    args = parse_args([
+        "--resume-from", str(checkpoint),
+        "--stop-after-epoch", "15",
+    ])
+    assert args.resume_from == checkpoint
+    assert args.stop_after_epoch == 15
+
+    with pytest.raises(SystemExit):
+        parse_args(["--stop-after-epoch", "0"])
+    with pytest.raises(SystemExit):
+        parse_args(["--epochs", "10", "--stop-after-epoch", "11"])
+    with pytest.raises(SystemExit):
+        parse_args(["--resume-from", str(tmp_path / "missing.pt")])

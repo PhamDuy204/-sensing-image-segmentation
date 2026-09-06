@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 
+import pytest
 import torch
 from accelerate import Accelerator
 from torch.utils.data import DataLoader, TensorDataset
@@ -304,3 +305,140 @@ def test_train_one_epoch_clips_gradients_only_when_requested():
         max_grad_norm=0.01,
     )
     assert accelerator.clipped
+
+
+def test_checkpoint_round_trip_restores_training_state(tmp_path: Path):
+    from oemseg.engine.checkpoint import restore_checkpoint
+
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 1.0)
+    with torch.no_grad():
+        model.weight.fill_(3.0)
+    path = tmp_path / "last.pt"
+    training_state = {
+        "best_train_loss": 0.42,
+        "best_train_epoch": 7,
+        "train_stale": 2,
+    }
+    args = argparse.Namespace(
+        model="unet",
+        model_variant="resnet18",
+        epochs=45,
+        size=1024,
+        batch_size=2,
+        grad_accumulation=1,
+        optimizer="adamw",
+        lr=6e-4,
+        encoder_lr=6e-5,
+        weight_decay=0.01,
+        warmup_epochs=5,
+        poly_power=0.9,
+        loss="ce_dice",
+        seed=42,
+    )
+    save_checkpoint(
+        path,
+        model,
+        optimizer,
+        scheduler,
+        7,
+        args,
+        metadata={"model_name": "unet", "model_variant": "resnet18", "world_size": 1},
+        training_state=training_state,
+    )
+
+    with torch.no_grad():
+        model.weight.zero_()
+    restored = restore_checkpoint(
+        path,
+        model,
+        optimizer,
+        scheduler,
+        args,
+        world_size=1,
+        map_location="cpu",
+    )
+
+    assert torch.all(model.weight == 3.0)
+    assert restored["epoch"] == 7
+    assert restored["training_state"] == training_state
+
+
+def test_checkpoint_resume_rejects_changed_training_recipe(tmp_path: Path):
+    from oemseg.engine.checkpoint import restore_checkpoint
+
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 1.0)
+    path = tmp_path / "last.pt"
+    original = argparse.Namespace(
+        model="unet",
+        model_variant="resnet18",
+        epochs=45,
+        size=1024,
+        batch_size=2,
+        grad_accumulation=1,
+        optimizer="adamw",
+        lr=6e-4,
+        encoder_lr=6e-5,
+        weight_decay=0.01,
+        warmup_epochs=5,
+        poly_power=0.9,
+        loss="ce_dice",
+        seed=42,
+    )
+    save_checkpoint(
+        path,
+        model,
+        optimizer,
+        scheduler,
+        3,
+        original,
+        metadata={"model_name": "unet", "model_variant": "resnet18", "world_size": 1},
+    )
+    changed = argparse.Namespace(**{**vars(original), "lr": 1e-3})
+
+    with pytest.raises(ValueError, match="lr"):
+        restore_checkpoint(path, model, optimizer, scheduler, changed, world_size=1, map_location="cpu")
+
+
+def test_resume_file_prep_carries_metrics_and_best_checkpoint_forward(tmp_path: Path):
+    from oemseg.engine.trainer import prepare_resume_files
+
+    previous = tmp_path / "previous"
+    current = tmp_path / "current"
+    previous.mkdir()
+    current.mkdir()
+    checkpoint = previous / "last.pt"
+    checkpoint.write_bytes(b"last")
+    (previous / "metrics.jsonl").write_text('{"epoch": 1}\n')
+    (previous / "best_train_loss.pt").write_bytes(b"best")
+
+    prepare_resume_files(checkpoint, current)
+
+    assert (current / "metrics.jsonl").read_text() == '{"epoch": 1}\n'
+    assert (current / "best_train_loss.pt").read_bytes() == b"best"
+
+
+def test_training_epoch_window_uses_absolute_resume_epoch_and_chunk_end():
+    from oemseg.engine.trainer import training_epoch_window
+
+    epochs, is_chunk_boundary = training_epoch_window(
+        total_epochs=45,
+        stop_after_epoch=30,
+        resume_epoch=15,
+    )
+    assert list(epochs) == list(range(16, 31))
+    assert is_chunk_boundary is True
+
+    epochs, is_chunk_boundary = training_epoch_window(
+        total_epochs=45,
+        stop_after_epoch=45,
+        resume_epoch=30,
+    )
+    assert list(epochs) == list(range(31, 46))
+    assert is_chunk_boundary is False
+
+    with pytest.raises(ValueError, match="already reached"):
+        training_epoch_window(total_epochs=45, stop_after_epoch=15, resume_epoch=15)
