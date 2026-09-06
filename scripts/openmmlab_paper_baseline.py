@@ -30,6 +30,42 @@ def region_for(filename: str) -> str:
     return filename.rsplit("_", 1)[0]
 
 
+def normalize_oem_image_layout(image):
+    """Normalize mixed OpenEarthMap TIFF layouts to HWC for MMCV/OpenCV."""
+    if image.ndim == 3 and image.shape[0] == 3 and image.shape[-1] != 3:
+        return image.transpose(1, 2, 0)
+    return image
+
+
+def _stage_native_file(source: Path, target: Path, kind: str) -> None:
+    if kind == "images":
+        import tifffile
+
+        with tifffile.TiffFile(source) as tif:
+            shape = tif.series[0].shape
+        if len(shape) == 3 and shape[0] == 3 and shape[-1] != 3:
+            image = normalize_oem_image_layout(tifffile.imread(source))
+            if target.is_symlink():
+                try:
+                    target.unlink()
+                except FileNotFoundError:
+                    pass
+            if not target.exists():
+                temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp.tif")
+                try:
+                    tifffile.imwrite(temporary, image, photometric="rgb")
+                    os.replace(temporary, target)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            return
+
+    if not target.exists():
+        try:
+            target.symlink_to(source.resolve())
+        except FileExistsError:
+            pass  # another torchrun rank staged the same file first
+
+
 def prepare_native_oem(data_root: Path, stage_root: Path) -> Path:
     """Expose the project's fixed splits in the flat layout expected by OEMDataset."""
     for split in ("train", "val"):
@@ -45,11 +81,7 @@ def prepare_native_oem(data_root: Path, stage_root: Path) -> Path:
                 target = dest / name
                 if not source.is_file():
                     raise FileNotFoundError(source)
-                if not target.exists():
-                    try:
-                        target.symlink_to(source.resolve())
-                    except FileExistsError:
-                        pass  # another torchrun rank staged the same file first
+                _stage_native_file(source, target, kind)
     return stage_root
 
 

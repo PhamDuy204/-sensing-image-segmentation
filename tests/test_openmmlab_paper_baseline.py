@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 from scripts.openmmlab_paper_baseline import (
+    normalize_oem_image_layout,
     PAPER_BATCH_SIZE,
     PAPER_ITERS,
     PYRAMIDMAMBA_EVAL_SPLIT,
@@ -40,3 +41,18 @@ def test_native_runner_forces_headless_matplotlib_backend():
     )
 
     assert result.stdout.strip() == "Agg"
+
+
+def test_oem_channel_first_tiffs_are_normalized_to_hwc():
+    import numpy as np
+
+    chw = np.arange(3 * 4 * 5, dtype=np.uint8).reshape(3, 4, 5)
+    hwc = normalize_oem_image_layout(chw)
+
+    assert hwc.shape == (4, 5, 3)
+    assert np.array_equal(hwc[..., 0], chw[0])
+    assert np.array_equal(hwc[..., 1], chw[1])
+    assert np.array_equal(hwc[..., 2], chw[2])
+
+    already_hwc = np.zeros((4, 5, 3), dtype=np.uint8)
+    assert normalize_oem_image_layout(already_hwc) is already_hwc
