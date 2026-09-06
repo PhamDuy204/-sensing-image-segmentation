@@ -6,6 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+
+# Kaggle notebooks export an inline backend that is invalid inside the isolated
+# OpenMMLab environment and inherited by every torchrun rank. This runner is
+# headless, so force Matplotlib's non-interactive backend before MMEngine imports.
+os.environ["MPLBACKEND"] = "Agg"
+
 import sys
 from pathlib import Path
 
