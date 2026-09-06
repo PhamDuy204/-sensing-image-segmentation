@@ -160,6 +160,17 @@ def _tool(client_dir: Path, name: str) -> Path:
     return path
 
 
+def resolve_repo_ref(repo_root: Path, repo_ref: str) -> str:
+    result = _run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", f"{repo_ref}^{{commit}}"],
+        capture=True,
+    )
+    resolved = result.stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", resolved):
+        raise RuntimeError(f"could not resolve repository ref {repo_ref!r} to a commit SHA")
+    return resolved
+
+
 def wandb_sync_command(
     wandb_bin: Path,
     run: Path,
@@ -332,6 +343,7 @@ def _run_kernel_once(
 
 
 def _foreground(args: argparse.Namespace) -> int:
+    args.repo_ref = resolve_repo_ref(Path(__file__).resolve().parents[1], args.repo_ref)
     token_file = args.token_file.expanduser().resolve()
     owner, token = _load_account(token_file)
     client_dir = args.client_dir.expanduser().resolve()

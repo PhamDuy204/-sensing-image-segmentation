@@ -21,7 +21,7 @@ fi
 run() { "$CONDA_BIN" run -n "$ENV_NAME" "$@"; }
 
 # Keep OpenMMLab off work-env: its compiled MMCV wheel targets Torch 2.0/CUDA 11.7.
-run python -m pip install --upgrade pip
+run python -m pip install --upgrade pip "setuptools<81" tifffile
 run python -m pip install \
   torch==2.0.1 torchvision==0.15.2 \
   --index-url https://download.pytorch.org/whl/cu117

@@ -209,11 +209,7 @@ def run_training(args) -> Path:
         gradient_accumulation_steps=args.grad_accumulation,
         mixed_precision=args.mixed_precision,
         step_scheduler_with_optimizer=False,
-        dataloader_config=DataLoaderConfiguration(
-            non_blocking=True,
-            use_seedable_sampler=True,
-            data_seed=args.seed,
-        ),
+        dataloader_config=DataLoaderConfiguration(non_blocking=True),
     )
     if accelerator.device.type != "cuda":
         raise RuntimeError("CUDA is required for this experiment")
@@ -272,7 +268,11 @@ def run_training(args) -> Path:
             args,
             world_size=accelerator.num_processes,
             map_location=accelerator.device,
+            train_generator=loaders.train_generator,
         )
+        accelerator_state_dir = args.resume_from.parent / "accelerator_state"
+        if accelerator_state_dir.is_dir():
+            accelerator.load_state(str(accelerator_state_dir))
 
     wandb_run = None
     if args.wandb and accelerator.is_main_process:
@@ -357,6 +357,7 @@ def run_training(args) -> Path:
             metadata,
             model_state_dict=accelerator.get_state_dict(model),
             training_state=training_state(),
+            train_generator=loaders.train_generator,
         )
 
     if resume_checkpoint is not None:
@@ -495,6 +496,9 @@ def run_training(args) -> Path:
 
     completed_epoch = epoch
     if is_chunk_boundary and not early_stopped:
+        accelerator.wait_for_everyone()
+        accelerator.save_state(str(run_dir / "accelerator_state"))
+        accelerator.wait_for_everyone()
         if accelerator.is_main_process:
             (run_dir / "chunk_state.json").write_text(
                 json.dumps(

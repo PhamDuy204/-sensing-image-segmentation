@@ -8,6 +8,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+import torch
 from torch.utils.data import DataLoader
 
 from oemseg.data.dataset import OEMDataset, read_split, region_for
@@ -21,6 +23,13 @@ class LoaderBundle:
     train_count: int
     internal_val_count: int
     test_count: int
+    train_generator: torch.Generator | None = None
+
+
+def seed_worker(worker_id: int) -> None:
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 def split_train_val(names: list[str], val_fraction: float, seed: int) -> tuple[list[str], list[str]]:
@@ -88,7 +97,9 @@ def build_loaders(args) -> LoaderBundle:
     test_names = read_split(args.data_root, "val")
     train_names, val_names = split_train_val(official_train, args.internal_val_fraction, args.seed)
 
-    loader_kwargs = {
+    resumable = bool(getattr(args, "stop_after_epoch", None) or getattr(args, "resume_from", None))
+    train_generator = torch.Generator().manual_seed(args.seed) if resumable else None
+    eval_loader_kwargs = {
         "num_workers": args.workers,
         "pin_memory": True,
         "persistent_workers": args.workers > 0,
@@ -98,20 +109,24 @@ def build_loaders(args) -> LoaderBundle:
         batch_size=args.batch_size,
         shuffle=True,
         drop_last=True,
-        **loader_kwargs,
+        num_workers=args.workers,
+        pin_memory=True,
+        persistent_workers=args.workers > 0 and not resumable,
+        generator=train_generator,
+        worker_init_fn=seed_worker if resumable else None,
     )
     test_loader = DataLoader(
         OEMDataset(args.data_root, test_names, args.size, return_name=True),
         batch_size=args.eval_batch_size,
         shuffle=False,
-        **loader_kwargs,
+        **eval_loader_kwargs,
     )
     internal_val = (
         DataLoader(
             OEMDataset(args.data_root, val_names, args.size, return_name=True),
             batch_size=args.eval_batch_size,
             shuffle=False,
-            **loader_kwargs,
+            **eval_loader_kwargs,
         )
         if val_names
         else None
@@ -123,4 +138,5 @@ def build_loaders(args) -> LoaderBundle:
         train_count=len(train_names),
         internal_val_count=len(val_names),
         test_count=len(test_names),
+        train_generator=train_generator,
     )

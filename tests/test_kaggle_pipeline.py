@@ -206,3 +206,33 @@ def test_wandb_sync_command_can_append_chunks_to_one_run(tmp_path):
         "--append",
         str(tmp_path / "offline-run-abc"),
     ]
+
+
+def test_foreground_pins_repo_ref_to_commit_before_submission(monkeypatch, tmp_path):
+    import argparse
+    from scripts import kaggle_pipeline as pipeline
+
+    pinned = "a" * 40
+    captured = {}
+    monkeypatch.setattr(pipeline, "resolve_repo_ref", lambda root, ref: pinned, raising=False)
+    monkeypatch.setattr(pipeline, "_load_account", lambda path: ("owner", "token"))
+    monkeypatch.setattr(pipeline, "_tool", lambda client_dir, name: tmp_path / name)
+
+    def fake_run_kernel_once(**kwargs):
+        captured["repo_ref"] = kwargs["args"].repo_ref
+        return {}
+
+    monkeypatch.setattr(pipeline, "_run_kernel_once", fake_run_kernel_once)
+    args = argparse.Namespace(
+        token_file=tmp_path / "token",
+        client_dir=tmp_path,
+        smoke=False,
+        slug="oem-unet-paper-repro",
+        model="unet",
+        state_root=tmp_path / "state",
+        chunk_epochs=0,
+        repo_ref="main",
+    )
+
+    assert pipeline._foreground(args) == 0
+    assert captured["repo_ref"] == pinned

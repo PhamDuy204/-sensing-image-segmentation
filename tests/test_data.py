@@ -74,3 +74,23 @@ def test_eval_loaders_expose_sample_names():
     assert loaders.internal_val.dataset.return_name is True
     assert loaders.test.dataset.return_name is True
     assert loaders.train.dataset.return_name is False
+
+
+def test_resumable_train_loader_has_checkpointable_generator_and_nonpersistent_workers():
+    args = SimpleNamespace(
+        data_root=Path("datasets/OpenEarthMap/OpenEarthMap"),
+        internal_val_fraction=0,
+        seed=42,
+        size=32,
+        workers=2,
+        batch_size=2,
+        eval_batch_size=2,
+        stop_after_epoch=15,
+        resume_from=None,
+    )
+    loaders = build_loaders(args)
+
+    assert loaders.train_generator is loaders.train.generator
+    assert loaders.train_generator is not None
+    assert loaders.train.worker_init_fn is not None
+    assert loaders.train.persistent_workers is False

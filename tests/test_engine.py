@@ -80,12 +80,15 @@ def test_validation_non_improvement_increments_stale():
 
 
 def test_performance_helper_uses_high_matmul_precision():
-    previous = torch.get_float32_matmul_precision()
+    previous_precision = torch.get_float32_matmul_precision()
+    previous_benchmark = torch.backends.cudnn.benchmark
     try:
-        configure_torch_performance(torch.device("cpu"))
+        configure_torch_performance(torch.device("cuda"))
         assert torch.get_float32_matmul_precision() == "high"
+        assert torch.backends.cudnn.benchmark is True
     finally:
-        torch.set_float32_matmul_precision(previous)
+        torch.set_float32_matmul_precision(previous_precision)
+        torch.backends.cudnn.benchmark = previous_benchmark
 
 
 def test_distributed_batchnorm_syncs_only_for_multiple_processes():
@@ -442,3 +445,107 @@ def test_training_epoch_window_uses_absolute_resume_epoch_and_chunk_end():
 
     with pytest.raises(ValueError, match="already reached"):
         training_epoch_window(total_epochs=45, stop_after_epoch=15, resume_epoch=15)
+
+
+def test_training_accelerator_keeps_pytorch_random_sampler(monkeypatch):
+    import oemseg.engine.trainer as trainer
+
+    captured = {}
+
+    class FakeAccelerator:
+        device = torch.device("cpu")
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(trainer, "Accelerator", FakeAccelerator)
+    monkeypatch.setattr(trainer, "validate_email_settings", lambda args: None)
+    args = argparse.Namespace(grad_accumulation=1, mixed_precision="no", seed=42)
+
+    with pytest.raises(RuntimeError, match="CUDA is required"):
+        trainer.run_training(args)
+
+    config = captured["dataloader_config"]
+    assert config.non_blocking is True
+    assert config.use_seedable_sampler is False
+    assert config.data_seed is None
+
+
+def test_checkpoint_round_trip_restores_rng_state(tmp_path: Path):
+    import random
+    import numpy as np
+    from oemseg.engine.checkpoint import restore_checkpoint
+
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 1.0)
+    args = argparse.Namespace(model="unet", model_variant="resnet18", seed=42)
+    path = tmp_path / "last.pt"
+
+    random.seed(123)
+    np.random.seed(123)
+    torch.manual_seed(123)
+    save_checkpoint(
+        path,
+        model,
+        optimizer,
+        scheduler,
+        1,
+        args,
+        metadata={"world_size": 1},
+    )
+    expected = (random.random(), float(np.random.random()), float(torch.rand(())))
+
+    random.seed(999)
+    np.random.seed(999)
+    torch.manual_seed(999)
+    restore_checkpoint(
+        path,
+        model,
+        optimizer,
+        scheduler,
+        args,
+        world_size=1,
+        map_location="cpu",
+    )
+    actual = (random.random(), float(np.random.random()), float(torch.rand(())))
+
+    assert actual == pytest.approx(expected)
+
+
+def test_checkpoint_round_trip_restores_train_generator_state(tmp_path: Path):
+    from oemseg.engine.checkpoint import restore_checkpoint
+
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 1.0)
+    args = argparse.Namespace(model="unet", model_variant="resnet18", seed=42)
+    path = tmp_path / "last.pt"
+    generator = torch.Generator().manual_seed(123)
+
+    save_checkpoint(
+        path,
+        model,
+        optimizer,
+        scheduler,
+        1,
+        args,
+        metadata={"world_size": 1},
+        train_generator=generator,
+    )
+    expected = torch.randperm(20, generator=generator)
+    generator.manual_seed(999)
+
+    restore_checkpoint(
+        path,
+        model,
+        optimizer,
+        scheduler,
+        args,
+        world_size=1,
+        map_location="cpu",
+        train_generator=generator,
+    )
+    actual = torch.randperm(20, generator=generator)
+
+    assert torch.equal(actual, expected)

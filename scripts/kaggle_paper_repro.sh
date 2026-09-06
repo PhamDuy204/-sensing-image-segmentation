@@ -163,6 +163,27 @@ case "$MODEL_NAME" in
     ;;
 esac
 
+if [[ "$MODEL_NAME" == "segnext" || "$MODEL_NAME" == "repstdc" ]]; then
+  if (( CHUNK_END_EPOCH > 0 )) || [[ "$RESUME_FROM_INPUT" == "1" ]]; then
+    echo "ERROR: native OpenMMLab SegNeXt/RepSTDC runs are iteration-based and do not use epoch chunks" >&2
+    exit 4
+  fi
+  export WANDB_PROJECT WANDB_ENTITY WANDB_MODE
+  export CUDA_VISIBLE_DEVICES="$GPU_IDS"
+  NATIVE_SMOKE_ARGS=()
+  [[ "$SMOKE" == "1" ]] && NATIVE_SMOKE_ARGS=(--smoke)
+  "${RUN_PYTHON[@]}" -m torch.distributed.run --standalone --nproc_per_node="$EXPECTED_GPU_COUNT" \
+    scripts/openmmlab_paper_baseline.py \
+    --model "$MODEL_NAME" \
+    --data-root "$DATA_ROOT" \
+    --output-root "$OUTPUT_ROOT" \
+    --run-name "$RUN_NAME" \
+    "${NATIVE_SMOKE_ARGS[@]}"
+  find "$OUTPUT_ROOT" -name best_checkpoint_summary.json -print -exec cat {} \; || true
+  find "$OUTPUT_ROOT" -type d -path '*/wandb/offline-run-*' -print || true
+  exit 0
+fi
+
 RESUME_ARGS=()
 if [[ "$RESUME_FROM_INPUT" == "1" ]]; then
   mapfile -t RESUME_CANDIDATES < <(
