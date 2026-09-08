@@ -43,6 +43,7 @@ def build_kernel_files(
     model: str,
     smoke: bool,
     repo_ref: str,
+    model_variant: str | None = None,
     chunk_end_epoch: int | None = None,
     previous_kernel: str | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
@@ -65,6 +66,7 @@ def build_kernel_files(
         (
             f"ACCELERATOR_KIND={accelerator_kind} "
             f"MODEL_NAME={shlex.quote(model)} "
+            f"MODEL_VARIANT={shlex.quote(model_variant or '')} "
             f"SMOKE={'1' if smoke else '0'} "
             f"CHUNK_END_EPOCH={chunk_end_epoch or 0} "
             f"RESUME_FROM_INPUT={'1' if previous_kernel else '0'} "
@@ -237,6 +239,7 @@ def _run_kernel_once(
         model=args.model,
         smoke=args.smoke,
         repo_ref=args.repo_ref,
+        model_variant=args.model_variant,
         chunk_end_epoch=chunk_end_epoch,
         previous_kernel=previous_kernel,
     )
@@ -249,6 +252,7 @@ def _run_kernel_once(
         "model": args.model,
         "smoke": args.smoke,
         "repo_ref": args.repo_ref,
+        "model_variant": args.model_variant,
         "kernel": kernel,
         "machine_shape": metadata["machine_shape"],
         "chunk_end_epoch": chunk_end_epoch,
@@ -376,6 +380,7 @@ def _foreground(args: argparse.Namespace) -> int:
         "model": args.model,
         "smoke": args.smoke,
         "repo_ref": args.repo_ref,
+        "model_variant": args.model_variant,
         "chunk_epochs": args.chunk_epochs,
         "wandb_run_id": wandb_target_id,
         "run_root": str(run_root),
@@ -445,6 +450,11 @@ def _foreground(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, choices=MODELS)
+    parser.add_argument(
+        "--model-variant",
+        default=None,
+        help="optional model variant/backbone forwarded to train.py, e.g. resnet34 for SMP U-Net",
+    )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--detach", action="store_true", help="run the watcher in the background")
     parser.add_argument("--repo-ref", default="main", help="Git branch/tag/SHA fetched by the Kaggle notebook")

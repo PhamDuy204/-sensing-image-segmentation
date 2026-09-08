@@ -45,12 +45,30 @@ def test_kernel_files_enable_private_t4_and_keep_secrets_local():
 
     source = "\n".join(notebook["cells"][0]["source"])
     assert "MODEL_NAME=unet" in source
+    assert "MODEL_VARIANT=''" in source
     assert "SMOKE=1" in source
     assert "feat/kaggle-auto-sync" in source
     assert "kaggle_paper_repro.sh" in source
     assert "WANDB_API_KEY" not in source
     assert "KAGGLE_API_TOKEN" not in source
 
+
+
+def test_kernel_files_forward_optional_model_variant_to_notebook():
+    from scripts.kaggle_pipeline import build_kernel_files
+
+    notebook, _ = build_kernel_files(
+        owner="duy18102004",
+        slug="oem-unet-resnet34-paper-repro",
+        model="unet",
+        model_variant="resnet34",
+        smoke=False,
+        repo_ref="main",
+    )
+
+    source = "\n".join(notebook["cells"][0]["source"])
+    assert "MODEL_NAME=unet" in source
+    assert "MODEL_VARIANT=resnet34" in source
 
 def test_normalize_status_handles_kaggle_cli_variants():
     from scripts.kaggle_pipeline import normalize_status
@@ -109,6 +127,8 @@ def test_kaggle_repro_script_distinguishes_smoke_and_keeps_temp_env_out_of_outpu
     pipeline = (ROOT / "scripts/kaggle_pipeline.py").read_text()
 
     assert 'RUN_NAME="${RUN_NAME}${SMOKE_SUFFIX}"' in script
+    assert 'MODEL_VARIANT_ARGS=(--model-variant "$MODEL_VARIANT")' in script
+    assert 'RUN_MODEL_NAME="${MODEL_NAME}-$(printf' in script
     assert 'SMOKE_SUFFIX="-smoke"' in script
     assert "/kaggle/tmp/.micromamba" in script
     assert "/kaggle/working/.micromamba" not in script

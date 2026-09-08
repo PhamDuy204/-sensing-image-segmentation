@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 MODEL_NAME="${MODEL_NAME:?set MODEL_NAME}"
+MODEL_VARIANT="${MODEL_VARIANT:-}"
 DATA_ROOT="${DATA_ROOT:-/kaggle/input/datasets/duy18102004/oem-dataset/OpenEarthMap_Prepared}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/kaggle/working/oem_outputs}"
 WANDB_ENTITY="${WANDB_ENTITY:-phamdinhanhduy-university-of-information-and-technology}"
@@ -46,7 +47,15 @@ elif [[ "$MODEL_NAME" == "mask2former" ]]; then
   PATIENCE=0
 fi
 
-RUN_NAME="${MODEL_NAME}-paper-repro-${RUN_SUFFIX}"
+RUN_MODEL_NAME="$MODEL_NAME"
+if [[ -n "$MODEL_VARIANT" ]]; then
+  RUN_MODEL_NAME="${MODEL_NAME}-$(printf '%s' "$MODEL_VARIANT" | tr -c 'A-Za-z0-9._-' '_')"
+fi
+RUN_NAME="${RUN_MODEL_NAME}-paper-repro-${RUN_SUFFIX}"
+MODEL_VARIANT_ARGS=()
+if [[ -n "$MODEL_VARIANT" ]]; then
+  MODEL_VARIANT_ARGS=(--model-variant "$MODEL_VARIANT")
+fi
 SMOKE_SUFFIX=""
 [[ "$SMOKE" == "1" ]] && SMOKE_SUFFIX="-smoke"
 RUN_NAME="${RUN_NAME}${SMOKE_SUFFIX}"
@@ -208,6 +217,7 @@ SMOKE_ARGS=()
 
 printf '%s\n' \
   "model=$MODEL_NAME" \
+  "model_variant=${MODEL_VARIANT:-default}" \
   "epochs=$EPOCHS" \
   "image_size=$IMAGE_SIZE" \
   "accelerator=$ACCELERATOR_KIND" \
@@ -234,6 +244,7 @@ printf '%s\n' \
   --gpus "$GPU_IDS" \
   --model "$MODEL_NAME" \
   -- \
+  "${MODEL_VARIANT_ARGS[@]}" \
   --data-root "$DATA_ROOT" \
   --output-root "$OUTPUT_ROOT" \
   --run-name "$RUN_NAME" \
