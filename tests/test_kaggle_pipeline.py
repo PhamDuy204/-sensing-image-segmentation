@@ -256,3 +256,50 @@ def test_foreground_pins_repo_ref_to_commit_before_submission(monkeypatch, tmp_p
 
     assert pipeline._foreground(args) == 0
     assert captured["repo_ref"] == pinned
+
+
+def test_recover_existing_run_polls_and_downloads_without_resubmitting(monkeypatch, tmp_path):
+    import argparse
+    import json
+    import subprocess
+    from scripts import kaggle_pipeline as pipeline
+
+    run_root = tmp_path / "run"
+    output_dir = run_root / "output"
+    output_dir.mkdir(parents=True)
+    state_path = run_root / "state.json"
+    state_path.write_text(json.dumps({
+        "kernel": "owner/oem-unet-resnet34-paper-repro",
+        "output_dir": str(output_dir),
+        "status": "RUNNING",
+    }))
+
+    monkeypatch.setattr(pipeline, "_load_account", lambda path: ("owner", "token"))
+    monkeypatch.setattr(pipeline, "_tool", lambda client_dir, name: tmp_path / name)
+    commands = []
+
+    def fake_run(command, *, env=None, capture=False):
+        commands.append(command)
+        if command[1:3] == ["kernels", "status"]:
+            return subprocess.CompletedProcess(command, 0, stdout="Kernel status: COMPLETE", stderr="")
+        if command[1:3] == ["kernels", "output"]:
+            (output_dir / "oem_outputs").mkdir()
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(pipeline, "_run", fake_run)
+    monkeypatch.setattr(pipeline, "_sync_wandb", lambda *a, **k: ["offline-run-x"])
+    args = argparse.Namespace(
+        recover_run_root=run_root,
+        token_file=tmp_path / "token",
+        client_dir=tmp_path,
+        poll_seconds=1,
+    )
+
+    assert pipeline._recover_existing(args) == 0
+    assert not any(cmd[1:3] == ["kernels", "push"] for cmd in commands)
+    assert any(cmd[1:3] == ["kernels", "status"] for cmd in commands)
+    assert any(cmd[1:3] == ["kernels", "output"] for cmd in commands)
+    recovered = json.loads(state_path.read_text())
+    assert recovered["status"] == "SYNCED"
+    assert recovered["synced_wandb_runs"] == ["offline-run-x"]

@@ -213,6 +213,83 @@ def _state_update(path: Path, state: dict[str, object], **updates: object) -> No
     _write_json(path, state)
 
 
+def _recover_existing(args: argparse.Namespace) -> int:
+    run_root = args.recover_run_root.expanduser().resolve()
+    state_path = run_root / "state.json"
+    if not state_path.is_file():
+        raise RuntimeError(f"missing recovery state: {state_path}")
+    state = json.loads(state_path.read_text())
+    kernel = str(state.get("kernel") or "")
+    if not kernel or "/" not in kernel:
+        raise RuntimeError(f"invalid kernel in recovery state: {kernel!r}")
+    output_dir = Path(str(state.get("output_dir") or (run_root / "output"))).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    token_file = args.token_file.expanduser().resolve()
+    owner, token = _load_account(token_file)
+    if not kernel.startswith(f"{owner}/"):
+        raise RuntimeError(f"recovery kernel {kernel!r} does not belong to token owner {owner!r}")
+    client_dir = args.client_dir.expanduser().resolve()
+    kaggle_bin = _tool(client_dir, "kaggle")
+    wandb_bin = _tool(client_dir, "wandb")
+    kaggle_env = os.environ.copy()
+    kaggle_env["KAGGLE_API_TOKEN"] = token
+
+    last_status = None
+    consecutive_failures = 0
+    while True:
+        try:
+            result = _run(
+                [str(kaggle_bin), "kernels", "status", kernel],
+                env=kaggle_env,
+                capture=True,
+            )
+            status = normalize_status(result.stdout + "\n" + result.stderr)
+            consecutive_failures = 0
+        except (subprocess.CalledProcessError, ValueError) as error:
+            consecutive_failures += 1
+            if consecutive_failures >= 10:
+                _state_update(state_path, state, status="STATUS_ERROR", error=str(error))
+                raise RuntimeError(f"could not read Kaggle status for {kernel}") from error
+            time.sleep(args.poll_seconds)
+            continue
+
+        if status != last_status:
+            print(f"Kaggle status: {status}", flush=True)
+            _state_update(state_path, state, status=status)
+            last_status = status
+        if status in TERMINAL_STATUSES:
+            break
+        time.sleep(args.poll_seconds)
+
+    if status != "COMPLETE":
+        raise RuntimeError(f"Kaggle run ended with status {status}: {kernel}")
+
+    print("Downloading Kaggle outputs", flush=True)
+    _run(
+        [
+            str(kaggle_bin),
+            "kernels",
+            "output",
+            kernel,
+            "-p",
+            str(output_dir),
+            "-o",
+            "-q",
+            "--file-pattern",
+            r"^oem_outputs/",
+        ],
+        env=kaggle_env,
+    )
+    _state_update(state_path, state, status="DOWNLOADED")
+
+    print("Syncing offline W&B run(s)", flush=True)
+    synced = _sync_wandb(wandb_bin, output_dir)
+    _state_update(state_path, state, status="SYNCED", synced_wandb_runs=synced)
+    print(f"RECOVERED: {kernel}; synced {len(synced)} W&B run(s); state={state_path}")
+    return 0
+
+
 def _run_kernel_once(
     *,
     args: argparse.Namespace,
@@ -481,6 +558,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("~/.local/state/oem-kaggle"),
     )
+    parser.add_argument(
+        "--recover-run-root",
+        type=Path,
+        default=None,
+        help="resume polling/downloading an already-submitted kernel without pushing a new version",
+    )
     return parser
 
 
@@ -494,6 +577,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.smoke and args.chunk_epochs:
         raise SystemExit("--chunk-epochs is only valid for full runs")
     if not args.detach:
+        if args.recover_run_root is not None:
+            return _recover_existing(args)
         return _foreground(args)
 
     state_root = args.state_root.expanduser().resolve()
