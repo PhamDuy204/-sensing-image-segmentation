@@ -11,6 +11,7 @@ SMOKE="${SMOKE:-0}"
 ACCELERATOR_KIND="${ACCELERATOR_KIND:-T4X2}"
 CHUNK_END_EPOCH="${CHUNK_END_EPOCH:-0}"
 RESUME_FROM_INPUT="${RESUME_FROM_INPUT:-0}"
+RESUME_ARCHIVE="${RESUME_ARCHIVE:-}"
 
 EPOCHS=45
 IMAGE_SIZE=1024
@@ -195,10 +196,26 @@ fi
 
 RESUME_ARGS=()
 if [[ "$RESUME_FROM_INPUT" == "1" ]]; then
-  mapfile -t RESUME_CANDIDATES < <(
-    find /kaggle/input -type f -path "*/oem_outputs/${RUN_NAME}/last.pt" -print
-  )
-  [[ ${#RESUME_CANDIDATES[@]} -eq 1 ]] || {
+  if [[ -n "$RESUME_ARCHIVE" ]]; then
+    RESUME_DIR=/kaggle/tmp/oem_resume
+    rm -rf "$RESUME_DIR"
+    mkdir -p "$RESUME_DIR"
+    python3 - "$RESUME_ARCHIVE" "$RESUME_DIR" <<'PY'
+from pathlib import Path
+import sys, zipfile
+archive, target = Path(sys.argv[1]), Path(sys.argv[2])
+if not archive.is_file():
+    raise SystemExit(f"ERROR: resume archive missing: {archive}")
+with zipfile.ZipFile(archive) as zf:
+    zf.extractall(target)
+PY
+    RESUME_CANDIDATES=("$RESUME_DIR/last.pt")
+  else
+    mapfile -t RESUME_CANDIDATES < <(
+      find /kaggle/input -type f -path "*/oem_outputs/${RUN_NAME}/last.pt" -print
+    )
+  fi
+  [[ ${#RESUME_CANDIDATES[@]} -eq 1 && -f "${RESUME_CANDIDATES[0]}" ]] || {
     echo "ERROR: expected exactly one resume checkpoint, found ${#RESUME_CANDIDATES[@]}" >&2
     printf '%s\n' "${RESUME_CANDIDATES[@]}" >&2
     exit 4

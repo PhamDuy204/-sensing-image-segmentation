@@ -46,6 +46,7 @@ def build_kernel_files(
     model_variant: str | None = None,
     chunk_end_epoch: int | None = None,
     previous_kernel: str | None = None,
+    resume_dataset: str | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     code_file = f"{slug}.ipynb"
     repo_dir = "/kaggle/tmp/OEM_Segmentation"
@@ -69,8 +70,13 @@ def build_kernel_files(
             f"MODEL_VARIANT={shlex.quote(model_variant or '')} "
             f"SMOKE={'1' if smoke else '0'} "
             f"CHUNK_END_EPOCH={chunk_end_epoch or 0} "
-            f"RESUME_FROM_INPUT={'1' if previous_kernel else '0'} "
-            "bash scripts/kaggle_paper_repro.sh\n"
+            f"RESUME_FROM_INPUT={'1' if (previous_kernel or resume_dataset) else '0'} "
+            + (
+                'RESUME_ARCHIVE="$(find /kaggle/input -type f -name resume.zip -print -quit)" '
+                if resume_dataset
+                else ''
+            )
+            + "bash scripts/kaggle_paper_repro.sh\n"
         ),
     ]
     notebook = {
@@ -100,7 +106,7 @@ def build_kernel_files(
         "enable_gpu": True,
         "enable_internet": True,
         "machine_shape": machine_shape,
-        "dataset_sources": [DATASET_SOURCE],
+        "dataset_sources": [DATASET_SOURCE] + ([resume_dataset] if resume_dataset else []),
         "competition_sources": [],
         "kernel_sources": [previous_kernel] if previous_kernel else [],
         "model_sources": [],
@@ -303,6 +309,7 @@ def _run_kernel_once(
     previous_kernel: str | None = None,
     wandb_target_id: str | None = None,
     wandb_append: bool = False,
+    resume_dataset: str | None = None,
 ) -> dict[str, object]:
     kernel = f"{owner}/{slug}"
     kernel_dir = run_root / "kernel"
@@ -319,6 +326,7 @@ def _run_kernel_once(
         model_variant=args.model_variant,
         chunk_end_epoch=chunk_end_epoch,
         previous_kernel=previous_kernel,
+        resume_dataset=resume_dataset,
     )
     notebook_path = kernel_dir / str(metadata["code_file"])
     _write_json(notebook_path, notebook)
@@ -334,6 +342,7 @@ def _run_kernel_once(
         "machine_shape": metadata["machine_shape"],
         "chunk_end_epoch": chunk_end_epoch,
         "previous_kernel": previous_kernel,
+        "resume_dataset": resume_dataset,
         "run_root": str(run_root),
         "output_dir": str(output_dir),
         "status": "SUBMITTING",
