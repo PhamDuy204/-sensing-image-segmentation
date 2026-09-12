@@ -58,8 +58,7 @@ def evaluate(
                 names = None
             if channels_last:
                 images = images.contiguous(memory_format=torch.channels_last)
-            with accelerator.autocast():
-                logits = model_logits(model, images, scales, flips)
+            logits = model_logits(model, images, scales, flips)
             with torch.autocast(device_type=accelerator.device.type, enabled=False):
                 float_logits = logits.float()
                 batch_loss = criterion(float_logits, targets)

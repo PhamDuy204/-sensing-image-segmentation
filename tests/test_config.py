@@ -89,6 +89,14 @@ def test_channels_last_is_opt_in():
     assert parse_args(["--channels-last"]).channels_last is True
 
 
+def test_mixed_precision_cli_is_disabled_and_full_precision_is_fixed():
+    assert parse_args([]).mixed_precision == "no"
+    with pytest.raises(SystemExit):
+        parse_args(["--mixed-precision", "fp16"])
+    with pytest.raises(SystemExit):
+        parse_args(["--mixed-precision", "bf16"])
+
+
 def test_unetformer_is_registered_with_paper_swin_b_default():
     assert "unetformer" in available_models()
     args = parse_args(["--model", "unetformer", "--no-pretrained"])

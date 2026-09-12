@@ -14,7 +14,6 @@ def test_kaggle_paper_recipe_is_accuracy_first():
         '--val-fraction 0',
         'PATIENCE=5',
         '--patience "$PATIENCE"',
-        '--mixed-precision no',
         '--loss auto',
         '--wandb-mode offline',
     ):

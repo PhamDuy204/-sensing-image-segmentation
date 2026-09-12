@@ -130,11 +130,10 @@ def train_one_epoch(
         if channels_last:
             images = images.contiguous(memory_format=torch.channels_last)
         with accelerator.accumulate(model):
-            with accelerator.autocast():
-                if native_loss:
-                    loss = model(images, targets=targets)
-                else:
-                    logits = model(images)
+            if native_loss:
+                loss = model(images, targets=targets)
+            else:
+                logits = model(images)
             if not native_loss:
                 with torch.autocast(device_type=accelerator.device.type, enabled=False):
                     loss = criterion(logits.float(), targets)
@@ -207,7 +206,7 @@ def run_training(args) -> Path:
     validate_email_settings(args)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accumulation,
-        mixed_precision=args.mixed_precision,
+        mixed_precision="no",
         step_scheduler_with_optimizer=False,
         dataloader_config=DataLoaderConfiguration(non_blocking=True),
     )

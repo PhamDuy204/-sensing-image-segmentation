@@ -166,8 +166,7 @@ def render_best_checkpoint_visualizations(
                 batch = image.unsqueeze(0).to(accelerator.device, non_blocking=True)
                 if args.channels_last:
                     batch = batch.contiguous(memory_format=torch.channels_last)
-                with accelerator.autocast():
-                    logits = model_logits(model, batch, args.tta_scales, not args.no_tta_flips)
+                logits = model_logits(model, batch, args.tta_scales, not args.no_tta_flips)
                 prediction = logits.argmax(1)[0]
                 originals.append(_image_from_tensor(image))
                 targets.append(_mask_image(target))

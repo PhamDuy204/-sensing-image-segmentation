@@ -173,7 +173,6 @@ python scripts/launch.py distributed \
   --grad-accumulation 1 \
   --val-fraction 0 \
   --patience 5 \
-  --mixed-precision no \
   --wandb
 ```
 
@@ -327,7 +326,7 @@ These sidecar results are **not directly comparable** to the local closed-set 10
 
 The shared engine already uses:
 
-- full precision by default for accuracy-first paper reproduction (`--mixed-precision fp16` remains opt-in);
+- full precision is enforced for accuracy-first paper reproduction; AMP/FP16/BF16 are disabled in the training pipeline;
 - high float32 matmul precision;
 - cuDNN benchmarking for the fixed-size CUDA workload;
 - pinned-memory DataLoaders;

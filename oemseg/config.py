@@ -87,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="clip gradient norm to this value; 0 disables clipping",
     )
-    parser.add_argument("--mixed-precision", choices=["no", "fp16", "bf16"], default="no")
+    parser.set_defaults(mixed_precision="no")
     parser.add_argument("--channels-last", action="store_true")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", default="sensing image segmentation")

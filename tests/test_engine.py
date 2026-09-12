@@ -214,9 +214,6 @@ class PrecisionProbeAccelerator:
         from contextlib import nullcontext
         return nullcontext()
 
-    def autocast(self):
-        return torch.autocast("cpu", dtype=torch.bfloat16)
-
     def backward(self, loss):
         loss.backward()
 
@@ -236,7 +233,7 @@ class PrecisionProbeAccelerator:
         return triggered
 
 
-def test_train_one_epoch_computes_shared_loss_in_float32_under_autocast():
+def test_train_one_epoch_computes_shared_loss_in_float32():
     class ProbeLoss(torch.nn.Module):
         def __init__(self):
             super().__init__()

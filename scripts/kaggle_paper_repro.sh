@@ -264,7 +264,6 @@ printf '%s\n' \
   --eval-start-epoch "$EVAL_START_EPOCH" \
   --val-fraction 0 \
   --patience "$PATIENCE" \
-  --mixed-precision no \
   --loss auto \
   --wandb \
   --wandb-mode offline \

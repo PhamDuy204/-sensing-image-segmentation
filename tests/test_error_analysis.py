@@ -68,14 +68,11 @@ def test_error_analysis_writes_sorted_top_n_without_images(tmp_path: Path):
     assert all("image" not in record and "prediction" not in record for record in records)
 
 
-def test_evaluate_computes_loss_in_float32_under_autocast():
+def test_evaluate_computes_loss_in_float32():
     class ProbeAccelerator:
         device = torch.device("cpu")
         is_local_main_process = True
         is_main_process = True
-
-        def autocast(self):
-            return torch.autocast("cpu", dtype=torch.bfloat16)
 
         def gather_for_metrics(self, value, use_gather_object=False):
             return value
