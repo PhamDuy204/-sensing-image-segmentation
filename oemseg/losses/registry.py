@@ -14,7 +14,7 @@ _MODEL_DEFAULT_LOSSES = {
     "segformer": "ce",
     "segnext": "ce",
     "repstdc": "repstdc",
-    "mambavision": "ce_dice",
+    "mambavision": "mambavision",
     "pyramidmamba": "ce_dice",
     "mask2former": "mask2former",
 }
@@ -22,9 +22,10 @@ _MODEL_ONLY_LOSSES = {
     "unetformer": "unetformer",
     "soft_ce_dice": "unetformer",
     "repstdc": "repstdc",
+    "mambavision": "mambavision",
     "mask2former": "mask2former",
 }
-_STRICT_NATIVE_MODELS = {"repstdc": "repstdc", "mask2former": "mask2former"}
+_STRICT_NATIVE_MODELS = {"repstdc": "repstdc", "mambavision": "mambavision", "mask2former": "mask2former"}
 
 
 def normalize_loss_name(name: str) -> str:
@@ -40,6 +41,7 @@ def available_losses() -> tuple[str, ...]:
         "dice",
         "soft_ce_dice",
         "unetformer",
+        "mambavision",
         "repstdc",
         "mask2former",
     )
@@ -76,11 +78,12 @@ def resolve_loss_name(name: str, model_name: str, model_variant: str | None = No
 
 def build_loss(name: str) -> nn.Module:
     key = normalize_loss_name(name)
-    if key in {"ce", "dice", "ce_dice"}:
+    if key in {"ce", "dice", "ce_dice", "mambavision"}:
         from oemseg.losses.segmentation import CrossEntropyDiceLoss, CrossEntropyLoss, DiceLoss
 
         builders = {
             "ce": CrossEntropyLoss,
+            "mambavision": CrossEntropyLoss,
             "dice": DiceLoss,
             "ce_dice": CrossEntropyDiceLoss,
         }

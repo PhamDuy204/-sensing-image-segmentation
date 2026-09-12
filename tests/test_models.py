@@ -83,10 +83,61 @@ def test_mambavision_adapter_contract_with_fake_backbone():
     logits = model(x)
     assert logits.shape == (1, 9, 64, 64)
     logits.mean().backward()
-    assert all(parameter.grad is not None for parameter in model.parameters() if parameter.requires_grad)
+    assert all(
+        parameter.grad is not None
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad and not name.startswith("auxiliary_head.")
+    )
+    assert all(parameter.grad is None for parameter in model.auxiliary_head.parameters())
     groups = model.parameter_groups(base_lr=6e-4, backbone_lr=6e-5)
     ids = [{id(p) for p in group["params"]} for group in groups]
     assert ids[0] and ids[1] and ids[0].isdisjoint(ids[1])
+
+
+def test_mambavision_uses_official_main_and_auxiliary_ce_loss():
+    import torch.nn.functional as F
+    from torch import nn
+    from oemseg.models.mambavision import MambaVisionAdapter
+
+    class FakeBackbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.stages = nn.ModuleList([
+                nn.Conv2d(3, 80, 4, 4),
+                nn.Conv2d(80, 160, 2, 2),
+                nn.Conv2d(160, 320, 2, 2),
+                nn.Conv2d(320, 640, 2, 2),
+            ])
+            self.model = nn.Module()
+            self.model.norm = nn.LayerNorm(640)
+            self.model.head = nn.Linear(640, 1000)
+
+        def forward(self, images):
+            features = []
+            x = images
+            for stage in self.stages:
+                x = stage(x)
+                features.append(x)
+            return self.model.norm(x.mean((2, 3))), features
+
+    model = MambaVisionAdapter(pretrained=False, backbone=FakeBackbone(), decoder_channels=64)
+    model.eval()
+    images = torch.randn(2, 3, 64, 64)
+    targets = torch.randint(0, 9, (2, 64, 64))
+
+    with torch.no_grad():
+        features = model._features(images)
+        main = F.interpolate(model.head(features), size=(64, 64), mode="bilinear", align_corners=False)
+        aux = F.interpolate(model.auxiliary_head(features[2]), size=(64, 64), mode="bilinear", align_corners=False)
+        expected = F.cross_entropy(main, targets) + 0.4 * F.cross_entropy(aux, targets)
+
+    loss = model(images, targets=targets)
+    assert model.native_loss_name == "mambavision"
+    assert model.uses_native_loss is True
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert torch.allclose(loss.detach(), expected, atol=1e-5, rtol=1e-4)
+    assert any(parameter.grad is not None for parameter in model.auxiliary_head.parameters())
 
 
 def test_unetformer_adapter_contract_with_fake_upstream():
@@ -192,6 +243,38 @@ def test_pyramidmamba_adapter_contract_with_fake_upstream():
     groups = model.parameter_groups(base_lr=6e-4, backbone_lr=6e-5)
     ids = [{id(p) for p in group["params"]} for group in groups]
     assert ids[0] and ids[1] and ids[0].isdisjoint(ids[1])
+
+
+def test_pyramidmamba_tta_resizes_views_to_fixed_model_input():
+    from torch import nn
+    from oemseg.models.pyramidmamba import PyramidMambaAdapter
+    from oemseg.utils.tta import model_logits
+
+    class FakePyramidMamba(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = nn.Conv2d(3, 8, 3, padding=1)
+            self.decoder = nn.Conv2d(8, 9, 1)
+
+        def forward(self, images):
+            return self.decoder(self.backbone(images))
+
+    adapter = PyramidMambaAdapter(model=FakePyramidMamba())
+    assert adapter.tta_input_size == (1024, 1024)
+    adapter.tta_input_size = (32, 32)
+    seen = []
+    original_forward = adapter.forward
+
+    def checked_forward(images):
+        seen.append(images.shape[-2:])
+        assert images.shape[-2:] == (32, 32)
+        return original_forward(images)
+
+    adapter.forward = checked_forward
+    logits = model_logits(adapter, torch.randn(1, 3, 16, 16), [0.75, 1.0, 1.25], flips=True)
+
+    assert logits.shape == (1, 9, 16, 16)
+    assert seen and set(seen) == {(32, 32)}
 
 
 def test_segnext_adapter_contract_with_fake_openmmlab_components():

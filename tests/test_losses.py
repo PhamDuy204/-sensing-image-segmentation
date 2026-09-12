@@ -21,7 +21,7 @@ def test_auto_loss_is_model_specific():
         "segformer": "ce",
         "segnext": "ce",
         "repstdc": "repstdc",
-        "mambavision": "ce_dice",
+        "mambavision": "mambavision",
         "pyramidmamba": "ce_dice",
         "mask2former": "mask2former",
     }
@@ -38,6 +38,8 @@ def test_native_auxiliary_losses_cannot_be_silently_dropped():
         resolve_loss_name("ce_dice", "unetformer", "resnet18")
     with pytest.raises(ValueError):
         resolve_loss_name("ce", "repstdc", "stdc1-ca")
+    with pytest.raises(ValueError):
+        resolve_loss_name("ce", "mambavision", "tiny")
 
 
 def test_mask2former_rejects_dense_loss_override():
@@ -51,6 +53,7 @@ def test_model_specific_loss_cannot_be_used_on_the_wrong_model():
         ("unetformer", "unet"),
         ("soft_ce_dice", "unet"),
         ("repstdc", "segnext"),
+        ("mambavision", "segformer"),
         ("mask2former", "segformer"),
     ):
         with pytest.raises(ValueError):

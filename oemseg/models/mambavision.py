@@ -10,11 +10,12 @@ from torch import Tensor, nn
 from oemseg.constants import NUM_CLASSES
 from oemseg.models.base import SegmentationModelAdapter
 from oemseg.models.registry import register_model
-from oemseg.models.upernet import UPerNetHead
+from oemseg.models.upernet import ConvNormAct, UPerNetHead
 
 MAMBAVISION_REPOSITORY = "nvidia/MambaVision-T-1K"
 MAMBAVISION_REVISION = "b1de77e17599566d98efb701c0231b1095dc3a67"
 MAMBAVISION_CHANNELS = (80, 160, 320, 640)
+MAMBAVISION_AUX_CHANNELS = 256
 
 
 def _raise_optional_dependency_error(error: Exception) -> None:
@@ -45,6 +46,9 @@ def _official_backbone(pretrained: bool) -> nn.Module:
 
 
 class MambaVisionAdapter(SegmentationModelAdapter):
+    native_loss_name = "mambavision"
+    uses_native_loss = True
+
     def __init__(
         self,
         variant: str = "tiny",
@@ -68,6 +72,11 @@ class MambaVisionAdapter(SegmentationModelAdapter):
             channels=decoder_channels,
             num_classes=num_classes,
         )
+        self.auxiliary_head = nn.Sequential(
+            ConvNormAct(MAMBAVISION_CHANNELS[2], MAMBAVISION_AUX_CHANNELS, 3, padding=1),
+            nn.Dropout2d(0.1),
+            nn.Conv2d(MAMBAVISION_AUX_CHANNELS, num_classes, 1),
+        )
 
     @property
     def backbone(self) -> nn.Module:
@@ -87,9 +96,20 @@ class MambaVisionAdapter(SegmentationModelAdapter):
             )
         return features
 
-    def forward(self, images: Tensor) -> Tensor:
-        logits = self.head(self._features(images))
-        return F.interpolate(logits, size=images.shape[-2:], mode="bilinear", align_corners=False)
+    def forward(self, images: Tensor, targets: Tensor | None = None) -> Tensor:
+        features = self._features(images)
+        logits = F.interpolate(
+            self.head(features), size=images.shape[-2:], mode="bilinear", align_corners=False
+        )
+        if targets is None:
+            return logits
+        auxiliary_logits = F.interpolate(
+            self.auxiliary_head(features[2]),
+            size=images.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
+        return F.cross_entropy(logits, targets) + 0.4 * F.cross_entropy(auxiliary_logits, targets)
 
 
 @register_model("mambavision", aliases=("mamba-vision", "mamba_vision"))

@@ -32,7 +32,7 @@ def test_auto_loss_resolves_to_model_specific_published_recipe():
         "segformer": "ce",
         "segnext": "ce",
         "repstdc": "repstdc",
-        "mambavision": "ce_dice",
+        "mambavision": "mambavision",
         "pyramidmamba": "ce_dice",
         "mask2former": "mask2former",
     }
@@ -41,8 +41,9 @@ def test_auto_loss_resolves_to_model_specific_published_recipe():
 
 
 def test_unetformer_swin_b_accepts_explicit_dense_loss_override():
-    assert parse_args(["--model", "unetformer", "--loss", "ce_dice", "--no-pretrained"]).loss == "ce_dice"
-    assert parse_args(["--model", "unetformer", "--loss", "soft_ce_dice", "--no-pretrained"]).loss == "soft_ce_dice"
+    base = ["--model", "unetformer", "--model-variant", "swin-b", "--no-pretrained"]
+    assert parse_args([*base, "--loss", "ce_dice"]).loss == "ce_dice"
+    assert parse_args([*base, "--loss", "soft_ce_dice"]).loss == "soft_ce_dice"
 
 
 def test_native_auxiliary_models_reject_overrides_that_drop_supervision():
@@ -50,6 +51,8 @@ def test_native_auxiliary_models_reject_overrides_that_drop_supervision():
         parse_args(["--model", "unetformer", "--model-variant", "resnet18", "--loss", "ce_dice", "--no-pretrained"])
     with pytest.raises(SystemExit):
         parse_args(["--model", "repstdc", "--loss", "ce", "--no-pretrained"])
+    with pytest.raises(SystemExit):
+        parse_args(["--model", "mambavision", "--loss", "ce", "--no-pretrained"])
 
 
 def test_mask2former_rejects_incompatible_loss_override():
@@ -97,10 +100,10 @@ def test_mixed_precision_cli_is_disabled_and_full_precision_is_fixed():
         parse_args(["--mixed-precision", "bf16"])
 
 
-def test_unetformer_is_registered_with_paper_swin_b_default():
+def test_unetformer_is_registered_with_paper_resnet18_default():
     assert "unetformer" in available_models()
     args = parse_args(["--model", "unetformer", "--no-pretrained"])
-    assert args.model_variant == "swin-b"
+    assert args.model_variant == "resnet18"
     assert args.loss == "unetformer"
 
 

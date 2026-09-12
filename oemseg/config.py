@@ -12,7 +12,7 @@ OPTIMIZER_NAMES = ("adam", "adamw")
 MODEL_DEFAULT_VARIANTS = {
     "unet": "resnet18",
     "unetpp": "resnet18",
-    "unetformer": "swin-b",
+    "unetformer": "resnet18",
     "segformer": "b0",
     "mambavision": "tiny",
     "pyramidmamba": "swin_base_patch4_window12_384.ms_in22k_ft_in1k",

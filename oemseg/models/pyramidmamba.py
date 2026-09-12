@@ -64,6 +64,8 @@ def _repair_mamba_dt_projection(model: nn.Module) -> None:
 
 
 class PyramidMambaAdapter(SegmentationModelAdapter):
+    tta_input_size = (1024, 1024)
+
     def __init__(
         self,
         variant: str = DEFAULT_BACKBONE,
