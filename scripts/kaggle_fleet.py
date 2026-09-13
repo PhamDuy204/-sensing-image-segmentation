@@ -24,7 +24,9 @@ if str(ROOT) not in sys.path:
 from scripts import kaggle_pipeline as kp
 
 MODELS = kp.MODELS
-CHUNKED = frozenset(MODELS) - {"segnext", "repstdc"}
+NATIVE_CHUNKED = frozenset({"segnext", "repstdc"})
+EPOCH_CHUNKED = frozenset(MODELS) - NATIVE_CHUNKED
+NATIVE_PHASE_END_ITERS = [26_666, 53_333, 80_000]
 PREFERRED_ACCOUNT = {model: index for index, model in enumerate(MODELS, start=1)}
 MIN_GPU_HOURS = 12.0
 
@@ -55,8 +57,16 @@ def gpu_quota(account: int, kaggle_bin: Path) -> tuple[str, str, float, str]:
     return owner, token, _hours(str(gpu["remaining"])), str(gpu.get("refreshAt") or "")
 
 
-def phase_plan(model: str) -> list[int | None]:
-    return kp.chunk_end_epochs(45, 15) if model in CHUNKED else [None]
+def phase_plan(model: str) -> list[int]:
+    if model in NATIVE_CHUNKED:
+        return list(NATIVE_PHASE_END_ITERS)
+    return kp.chunk_end_epochs(45, 15)
+
+
+def phase_boundary(model: str, end_value: int) -> dict[str, int | None]:
+    if model in NATIVE_CHUNKED:
+        return {"chunk_end_epoch": None, "chunk_end_iter": end_value}
+    return {"chunk_end_epoch": end_value, "chunk_end_iter": None}
 
 
 def _try_lock(lock_root: Path, account: int):
@@ -113,13 +123,25 @@ def choose_account(
         time.sleep(300)
 
 
-def _resume_zip(previous_output: Path, staging: Path) -> Path:
+def _resume_zip(previous_output: Path, staging: Path, *, native: bool = False) -> Path:
+    staging.mkdir(parents=True, exist_ok=True)
+    archive = staging / "resume.zip"
+    if native:
+        markers = list(previous_output.rglob("last_checkpoint"))
+        if len(markers) != 1:
+            raise RuntimeError(f"expected one last_checkpoint under {previous_output}, got {len(markers)}")
+        checkpoint_name = Path(markers[0].read_text().strip()).name
+        checkpoint = markers[0].parent / checkpoint_name
+        if not checkpoint.is_file():
+            raise RuntimeError(f"native checkpoint referenced by {markers[0]} is missing: {checkpoint}")
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.write(checkpoint, "resume_checkpoint.pth")
+        return archive
+
     checkpoints = list(previous_output.rglob("last.pt"))
     if len(checkpoints) != 1:
         raise RuntimeError(f"expected one last.pt under {previous_output}, got {len(checkpoints)}")
     run_dir = checkpoints[0].parent
-    staging.mkdir(parents=True, exist_ok=True)
-    archive = staging / "resume.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
         for name in ("last.pt", "metrics.jsonl", "best_train_loss.pt", "best_val_miou.pt"):
             path = run_dir / name
@@ -144,7 +166,7 @@ def create_resume_dataset(
     kaggle_bin: Path,
 ) -> str:
     staging = relay_root / f"part-{part:02d}-{uuid.uuid4().hex[:6]}"
-    _resume_zip(previous_output, staging)
+    _resume_zip(previous_output, staging, native=model in NATIVE_CHUNKED)
     slug = f"oem-{model}-resume-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
     dataset = f"{owner}/{slug}"
     (staging / "dataset-metadata.json").write_text(
@@ -185,7 +207,8 @@ def run_model(model: str, fleet_root: Path, repo_ref: str, poll_seconds: int) ->
     args.smoke = False
     args.model_variant = None
 
-    for part, end_epoch in enumerate(phase_plan(model), start=1):
+    for part, end_value in enumerate(phase_plan(model), start=1):
+        boundary = phase_boundary(model, end_value)
         account, lock, owner, token, remaining = choose_account(
             preferred=PREFERRED_ACCOUNT[model],
             previous_owner=previous_owner,
@@ -211,7 +234,7 @@ def run_model(model: str, fleet_root: Path, repo_ref: str, poll_seconds: int) ->
             print(f"{model}: relayed resume checkpoint to private dataset {relay_dataset}", flush=True)
 
         try:
-            slug = f"{base_slug}-part{part}" if end_epoch is not None else base_slug
+            slug = f"{base_slug}-part{part}"
             result = kp._run_kernel_once(
                 args=args,
                 owner=owner,
@@ -220,10 +243,11 @@ def run_model(model: str, fleet_root: Path, repo_ref: str, poll_seconds: int) ->
                 wandb_bin=wandb_bin,
                 slug=slug,
                 run_root=model_root / f"part-{part:02d}",
-                chunk_end_epoch=end_epoch,
+                chunk_end_epoch=boundary["chunk_end_epoch"],
+                chunk_end_iter=boundary["chunk_end_iter"],
                 previous_kernel=previous_kernel if same_owner else None,
                 resume_dataset=relay_dataset,
-                wandb_target_id=wandb_target_id if end_epoch is not None else None,
+                wandb_target_id=wandb_target_id,
                 wandb_append=part > 1,
             )
         finally:
@@ -232,15 +256,13 @@ def run_model(model: str, fleet_root: Path, repo_ref: str, poll_seconds: int) ->
         previous_kernel = str(result["kernel"])
         previous_owner = owner
         previous_output = Path(result["output_dir"])
-        if end_epoch is None:
-            break
-
         markers = list(previous_output.rglob("chunk_state.json"))
         if len(markers) != 1:
             raise RuntimeError(f"{model}: expected one chunk_state.json, got {len(markers)}")
         state = json.loads(markers[0].read_text())
         if bool(state.get("complete")):
-            print(f"{model}: completed at epoch {state.get('epoch')}", flush=True)
+            progress_key = "iteration" if model in NATIVE_CHUNKED else "epoch"
+            print(f"{model}: completed at {progress_key} {state.get(progress_key)}", flush=True)
             break
 
     print(f"{model}: DONE", flush=True)

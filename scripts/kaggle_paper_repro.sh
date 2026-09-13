@@ -10,6 +10,7 @@ WANDB_PROJECT="${WANDB_PROJECT:-sensing image segmentation}"
 SMOKE="${SMOKE:-0}"
 ACCELERATOR_KIND="${ACCELERATOR_KIND:-T4X2}"
 CHUNK_END_EPOCH="${CHUNK_END_EPOCH:-0}"
+NATIVE_CHUNK_END_ITER="${NATIVE_CHUNK_END_ITER:-0}"
 RESUME_FROM_INPUT="${RESUME_FROM_INPUT:-0}"
 RESUME_ARCHIVE="${RESUME_ARCHIVE:-}"
 
@@ -174,10 +175,51 @@ case "$MODEL_NAME" in
 esac
 
 if [[ "$MODEL_NAME" == "segnext" || "$MODEL_NAME" == "repstdc" ]]; then
-  if (( CHUNK_END_EPOCH > 0 )) || [[ "$RESUME_FROM_INPUT" == "1" ]]; then
-    echo "ERROR: native OpenMMLab SegNeXt/RepSTDC runs are iteration-based and do not use epoch chunks" >&2
+  if (( CHUNK_END_EPOCH > 0 )); then
+    echo "ERROR: native OpenMMLab models use NATIVE_CHUNK_END_ITER, not CHUNK_END_EPOCH" >&2
     exit 4
   fi
+  if (( NATIVE_CHUNK_END_ITER <= 0 )); then
+    NATIVE_CHUNK_END_ITER=80000
+  fi
+
+  NATIVE_RESUME_ARGS=()
+  if [[ "$RESUME_FROM_INPUT" == "1" ]]; then
+    if [[ -n "$RESUME_ARCHIVE" ]]; then
+      NATIVE_RESUME_DIR=/kaggle/tmp/oem_native_resume
+      rm -rf "$NATIVE_RESUME_DIR"
+      mkdir -p "$NATIVE_RESUME_DIR"
+      python3 - "$RESUME_ARCHIVE" "$NATIVE_RESUME_DIR" <<'PYRESUME'
+from pathlib import Path
+import sys, zipfile
+archive, target = Path(sys.argv[1]), Path(sys.argv[2])
+if not archive.is_file():
+    raise SystemExit(f"ERROR: native resume archive missing: {archive}")
+with zipfile.ZipFile(archive) as zf:
+    zf.extractall(target)
+PYRESUME
+      NATIVE_RESUME_CANDIDATES=("$NATIVE_RESUME_DIR/resume_checkpoint.pth")
+    else
+      mapfile -t NATIVE_LAST_MARKERS < <(
+        find /kaggle/input -type f -path "*/oem_outputs/${RUN_NAME}/last_checkpoint" -print
+      )
+      [[ ${#NATIVE_LAST_MARKERS[@]} -eq 1 ]] || {
+        echo "ERROR: expected exactly one native last_checkpoint marker, found ${#NATIVE_LAST_MARKERS[@]}" >&2
+        printf '%s\n' "${NATIVE_LAST_MARKERS[@]}" >&2
+        exit 4
+      }
+      NATIVE_CHECKPOINT_NAME="$(basename "$(tr -d '\r\n' < "${NATIVE_LAST_MARKERS[0]}")")"
+      NATIVE_RESUME_CANDIDATES=("$(dirname "${NATIVE_LAST_MARKERS[0]}")/$NATIVE_CHECKPOINT_NAME")
+    fi
+    [[ ${#NATIVE_RESUME_CANDIDATES[@]} -eq 1 && -f "${NATIVE_RESUME_CANDIDATES[0]}" ]] || {
+      echo "ERROR: expected exactly one native resume checkpoint" >&2
+      printf '%s\n' "${NATIVE_RESUME_CANDIDATES[@]}" >&2
+      exit 4
+    }
+    NATIVE_RESUME_CHECKPOINT="${NATIVE_RESUME_CANDIDATES[0]}"
+    NATIVE_RESUME_ARGS=(--resume-from "$NATIVE_RESUME_CHECKPOINT")
+  fi
+
   export WANDB_PROJECT WANDB_ENTITY WANDB_MODE
   export CUDA_VISIBLE_DEVICES="$GPU_IDS"
   NATIVE_SMOKE_ARGS=()
@@ -188,6 +230,8 @@ if [[ "$MODEL_NAME" == "segnext" || "$MODEL_NAME" == "repstdc" ]]; then
     --data-root "$DATA_ROOT" \
     --output-root "$OUTPUT_ROOT" \
     --run-name "$RUN_NAME" \
+    --chunk-end-iter "$NATIVE_CHUNK_END_ITER" \
+    "${NATIVE_RESUME_ARGS[@]}" \
     "${NATIVE_SMOKE_ARGS[@]}"
   find "$OUTPUT_ROOT" -name best_checkpoint_summary.json -print -exec cat {} \; || true
   find "$OUTPUT_ROOT" -type d -path '*/wandb/offline-run-*' -print || true

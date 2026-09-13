@@ -100,6 +100,55 @@ def paper_training_plan(world_size: int) -> dict[str, int]:
     }
 
 
+def native_chunk_plan(world_size: int, chunk_end_iter: int | None = None) -> dict[str, int | bool]:
+    plan = paper_training_plan(world_size)
+    end_iter = PAPER_ITERS if chunk_end_iter is None else chunk_end_iter
+    if end_iter < 1 or end_iter > PAPER_ITERS:
+        raise ValueError(f"chunk_end_iter must be in [1, {PAPER_ITERS}]")
+    return {
+        "stop_micro_iters": end_iter * plan["accumulation"],
+        "full_micro_iters": plan["micro_iters"],
+        "complete": end_iter == PAPER_ITERS,
+    }
+
+
+def native_chunk_state(
+    *,
+    world_size: int,
+    chunk_end_iter: int | None,
+    runner_iter: int,
+) -> dict[str, int | bool | str]:
+    control = native_chunk_plan(world_size, chunk_end_iter)
+    end_iter = PAPER_ITERS if chunk_end_iter is None else chunk_end_iter
+    complete = bool(control["complete"])
+    return {
+        "iteration": end_iter,
+        "total_iterations": PAPER_ITERS,
+        "micro_iteration": runner_iter,
+        "total_micro_iterations": int(control["full_micro_iters"]),
+        "complete": complete,
+        "reason": "training_complete" if complete else "chunk_boundary",
+    }
+
+
+def apply_native_chunk_control(
+    cfg,
+    *,
+    world_size: int,
+    chunk_end_iter: int | None,
+    resume_from: Path | None,
+    smoke: bool,
+) -> dict[str, int | bool]:
+    control = native_chunk_plan(world_size, chunk_end_iter)
+    cfg.default_hooks.checkpoint.save_last = True
+    if not smoke:
+        cfg.train_cfg.max_iters = int(control["stop_micro_iters"])
+    if resume_from is not None:
+        cfg.resume = True
+        cfg.load_from = str(resume_from)
+    return control
+
+
 def _segnext_model(data_preprocessor: dict) -> dict:
     sync_bn = dict(type="SyncBN", requires_grad=True)
     return dict(
@@ -136,7 +185,16 @@ def _segnext_model(data_preprocessor: dict) -> dict:
     )
 
 
-def build_config(model: str, data_root: Path, work_dir: Path, run_name: str, *, smoke: bool = False):
+def build_config(
+    model: str,
+    data_root: Path,
+    work_dir: Path,
+    run_name: str,
+    *,
+    smoke: bool = False,
+    chunk_end_iter: int | None = None,
+    resume_from: Path | None = None,
+):
     from mmengine.config import Config
 
     project_root = Path(__file__).resolve().parents[1]
@@ -173,6 +231,14 @@ def build_config(model: str, data_root: Path, work_dir: Path, run_name: str, *, 
         scheduler.begin *= plan["accumulation"]
         scheduler.end *= plan["accumulation"]
 
+    apply_native_chunk_control(
+        cfg,
+        world_size=world_size,
+        chunk_end_iter=chunk_end_iter,
+        resume_from=resume_from,
+        smoke=smoke,
+    )
+
     if smoke:
         cfg.optim_wrapper.accumulative_counts = 1
         cfg.train_cfg.max_iters = 2
@@ -208,6 +274,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--run-name", required=True)
+    parser.add_argument("--chunk-end-iter", type=int, default=None)
+    parser.add_argument("--resume-from", type=Path, default=None)
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args(argv)
 
@@ -221,12 +289,39 @@ def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault("WANDB_MODE", "offline")
     os.environ.setdefault("WANDB_DIR", str(run_dir))
 
-    cfg = build_config(args.model, stage_root, run_dir, args.run_name, smoke=args.smoke)
+    cfg = build_config(
+        args.model,
+        stage_root,
+        run_dir,
+        args.run_name,
+        smoke=args.smoke,
+        chunk_end_iter=args.chunk_end_iter,
+        resume_from=args.resume_from,
+    )
     from mmengine.runner import Runner
     from mmengine.dist import is_main_process
 
     runner = Runner.from_cfg(cfg)
     runner.train()
+
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    chunk_state = native_chunk_state(
+        world_size=world_size,
+        chunk_end_iter=args.chunk_end_iter,
+        runner_iter=int(runner.iter),
+    )
+    if args.smoke:
+        chunk_state["iteration"] = 2
+        chunk_state["micro_iteration"] = int(runner.iter)
+        chunk_state["complete"] = True
+        chunk_state["reason"] = "smoke_complete"
+
+    if is_main_process():
+        (run_dir / "chunk_state.json").write_text(json.dumps(chunk_state, indent=2) + "\n")
+
+    if not bool(chunk_state["complete"]):
+        return 0
+
     metrics = runner.test()
     if is_main_process():
         summary = {

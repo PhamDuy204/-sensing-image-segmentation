@@ -2,13 +2,13 @@ from pathlib import Path
 import zipfile
 
 
-def test_fleet_phase_plan_excludes_native_openmmlab_from_chunking():
+def test_fleet_phase_plan_chunks_native_openmmlab_by_effective_iteration():
     from scripts.kaggle_fleet import phase_plan
 
     assert phase_plan("unet") == [15, 30, 45]
     assert phase_plan("mask2former") == [15, 30, 45]
-    assert phase_plan("segnext") == [None]
-    assert phase_plan("repstdc") == [None]
+    assert phase_plan("segnext") == [26666, 53333, 80000]
+    assert phase_plan("repstdc") == [26666, 53333, 80000]
 
 
 def test_fleet_parses_kaggle_gpu_hours():
@@ -56,3 +56,27 @@ def test_resume_zip_preserves_checkpoint_and_accelerator_state(tmp_path: Path):
             "best_train_loss.pt",
             "accelerator_state/random_states_0.pkl",
         }
+
+
+def test_resume_zip_packages_native_mmengine_last_checkpoint(tmp_path: Path):
+    from scripts.kaggle_fleet import _resume_zip
+
+    run = tmp_path / "download" / "oem_outputs" / "segnext-paper-repro-t4x2"
+    run.mkdir(parents=True)
+    checkpoint = run / "iter_53332.pth"
+    checkpoint.write_bytes(b"mmengine-checkpoint")
+    (run / "last_checkpoint").write_text(
+        "/kaggle/working/oem_outputs/segnext-paper-repro-t4x2/iter_53332.pth\n"
+    )
+
+    archive = _resume_zip(tmp_path / "download", tmp_path / "relay", native=True)
+    with zipfile.ZipFile(archive) as zf:
+        assert zf.read("resume_checkpoint.pth") == b"mmengine-checkpoint"
+
+
+def test_phase_boundary_routes_epoch_and_native_chunks_to_distinct_pipeline_args():
+    from scripts.kaggle_fleet import phase_boundary
+
+    assert phase_boundary("unet", 15) == {"chunk_end_epoch": 15, "chunk_end_iter": None}
+    assert phase_boundary("segnext", 26_666) == {"chunk_end_epoch": None, "chunk_end_iter": 26_666}
+    assert phase_boundary("repstdc", 80_000) == {"chunk_end_epoch": None, "chunk_end_iter": 80_000}

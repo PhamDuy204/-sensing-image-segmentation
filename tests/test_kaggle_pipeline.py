@@ -302,3 +302,56 @@ def test_recover_existing_run_polls_and_downloads_without_resubmitting(monkeypat
     recovered = json.loads(state_path.read_text())
     assert recovered["status"] == "SYNCED"
     assert recovered["synced_wandb_runs"] == ["offline-run-x"]
+
+
+def test_native_chunked_kernel_forwards_iteration_boundary_and_resume():
+    from scripts.kaggle_pipeline import build_kernel_files
+
+    notebook, metadata = build_kernel_files(
+        owner="duy18102004",
+        slug="oem-segnext-part2",
+        model="segnext",
+        smoke=False,
+        repo_ref="main",
+        chunk_end_iter=53_333,
+        previous_kernel="duy18102004/oem-segnext-part1",
+    )
+
+    assert metadata["kernel_sources"] == ["duy18102004/oem-segnext-part1"]
+    source = "\n".join(notebook["cells"][0]["source"])
+    assert "NATIVE_CHUNK_END_ITER=53333" in source
+    assert "CHUNK_END_EPOCH=0" in source
+    assert "RESUME_FROM_INPUT=1" in source
+
+
+def test_native_repro_script_resumes_mmengine_checkpoint_and_chunks_by_iteration():
+    script = (ROOT / "scripts/kaggle_paper_repro.sh").read_text()
+
+    for expected in (
+        'NATIVE_CHUNK_END_ITER="${NATIVE_CHUNK_END_ITER:-0}"',
+        '--chunk-end-iter "$NATIVE_CHUNK_END_ITER"',
+        '--resume-from "$NATIVE_RESUME_CHECKPOINT"',
+        'resume_checkpoint.pth',
+        'last_checkpoint',
+    ):
+        assert expected in script
+
+    assert "native OpenMMLab SegNeXt/RepSTDC runs are iteration-based and do not use epoch chunks" not in script
+
+
+def test_wandb_sync_failure_is_reported_without_blocking_next_chunk(monkeypatch, tmp_path):
+    from scripts import kaggle_pipeline as pipeline
+
+    def fail_sync(*args, **kwargs):
+        raise PermissionError("artifact staging denied")
+
+    monkeypatch.setattr(pipeline, "_sync_wandb", fail_sync)
+    synced, error = pipeline._sync_wandb_nonfatal(
+        tmp_path / "wandb",
+        tmp_path / "output",
+        target_id="deadbeef",
+        append=True,
+    )
+
+    assert synced == []
+    assert "artifact staging denied" in error

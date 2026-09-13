@@ -45,6 +45,7 @@ def build_kernel_files(
     repo_ref: str,
     model_variant: str | None = None,
     chunk_end_epoch: int | None = None,
+    chunk_end_iter: int | None = None,
     previous_kernel: str | None = None,
     resume_dataset: str | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
@@ -70,6 +71,7 @@ def build_kernel_files(
             f"MODEL_VARIANT={shlex.quote(model_variant or '')} "
             f"SMOKE={'1' if smoke else '0'} "
             f"CHUNK_END_EPOCH={chunk_end_epoch or 0} "
+            f"NATIVE_CHUNK_END_ITER={chunk_end_iter or 0} "
             f"RESUME_FROM_INPUT={'1' if (previous_kernel or resume_dataset) else '0'} "
             + (
                 'RESUME_ARCHIVE="$(find /kaggle/input -type f -name resume.zip -print -quit)" '
@@ -213,6 +215,24 @@ def _sync_wandb(
     return synced
 
 
+def _sync_wandb_nonfatal(
+    wandb_bin: Path,
+    output_dir: Path,
+    *,
+    target_id: str | None = None,
+    append: bool = False,
+) -> tuple[list[str], str | None]:
+    try:
+        return _sync_wandb(
+            wandb_bin,
+            output_dir,
+            target_id=target_id,
+            append=append,
+        ), None
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        return [], str(error)
+
+
 def _state_update(path: Path, state: dict[str, object], **updates: object) -> None:
     state.update(updates)
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -306,6 +326,7 @@ def _run_kernel_once(
     slug: str,
     run_root: Path,
     chunk_end_epoch: int | None = None,
+    chunk_end_iter: int | None = None,
     previous_kernel: str | None = None,
     wandb_target_id: str | None = None,
     wandb_append: bool = False,
@@ -325,6 +346,7 @@ def _run_kernel_once(
         repo_ref=args.repo_ref,
         model_variant=args.model_variant,
         chunk_end_epoch=chunk_end_epoch,
+        chunk_end_iter=chunk_end_iter,
         previous_kernel=previous_kernel,
         resume_dataset=resume_dataset,
     )
@@ -341,6 +363,7 @@ def _run_kernel_once(
         "kernel": kernel,
         "machine_shape": metadata["machine_shape"],
         "chunk_end_epoch": chunk_end_epoch,
+        "chunk_end_iter": chunk_end_iter,
         "previous_kernel": previous_kernel,
         "resume_dataset": resume_dataset,
         "run_root": str(run_root),
@@ -416,19 +439,28 @@ def _run_kernel_once(
     _state_update(state_path, state, status="DOWNLOADED")
 
     print("Syncing offline W&B run(s)", flush=True)
-    synced = _sync_wandb(
+    synced, sync_error = _sync_wandb_nonfatal(
         wandb_bin,
         output_dir,
         target_id=wandb_target_id,
         append=wandb_append,
     )
-    _state_update(state_path, state, status="SYNCED", synced_wandb_runs=synced)
+    if sync_error:
+        print(f"WARNING: W&B sync failed for {kernel}: {sync_error}", file=sys.stderr, flush=True)
+    _state_update(
+        state_path,
+        state,
+        status="SYNC_WARNING" if sync_error else "SYNCED",
+        synced_wandb_runs=synced,
+        wandb_sync_error=sync_error,
+    )
     print(f"DONE: {kernel}; synced {len(synced)} W&B run(s); state={state_path}")
     return {
         "kernel": kernel,
         "output_dir": output_dir,
         "state_path": state_path,
         "synced_wandb_runs": synced,
+        "wandb_sync_error": sync_error,
     }
 
 
