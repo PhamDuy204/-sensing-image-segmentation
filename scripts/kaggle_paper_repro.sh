@@ -200,16 +200,23 @@ with zipfile.ZipFile(archive) as zf:
 PYRESUME
       NATIVE_RESUME_CANDIDATES=("$NATIVE_RESUME_DIR/resume_checkpoint.pth")
     else
-      mapfile -t NATIVE_LAST_MARKERS < <(
-        find /kaggle/input -type f -path "*/oem_outputs/${RUN_NAME}/last_checkpoint" -print
+      mapfile -t NATIVE_DIRECT_RESUME < <(
+        find /kaggle/input -type f -name resume_checkpoint.pth -print
       )
-      [[ ${#NATIVE_LAST_MARKERS[@]} -eq 1 ]] || {
-        echo "ERROR: expected exactly one native last_checkpoint marker, found ${#NATIVE_LAST_MARKERS[@]}" >&2
-        printf '%s\n' "${NATIVE_LAST_MARKERS[@]}" >&2
-        exit 4
-      }
-      NATIVE_CHECKPOINT_NAME="$(basename "$(tr -d '\r\n' < "${NATIVE_LAST_MARKERS[0]}")")"
-      NATIVE_RESUME_CANDIDATES=("$(dirname "${NATIVE_LAST_MARKERS[0]}")/$NATIVE_CHECKPOINT_NAME")
+      if [[ ${#NATIVE_DIRECT_RESUME[@]} -gt 0 ]]; then
+        NATIVE_RESUME_CANDIDATES=("${NATIVE_DIRECT_RESUME[@]}")
+      else
+        mapfile -t NATIVE_LAST_MARKERS < <(
+          find /kaggle/input -type f -path "*/oem_outputs/${RUN_NAME}/last_checkpoint" -print
+        )
+        [[ ${#NATIVE_LAST_MARKERS[@]} -eq 1 ]] || {
+          echo "ERROR: expected exactly one native last_checkpoint marker, found ${#NATIVE_LAST_MARKERS[@]}" >&2
+          printf '%s\n' "${NATIVE_LAST_MARKERS[@]}" >&2
+          exit 4
+        }
+        NATIVE_CHECKPOINT_NAME="$(basename "$(tr -d '\r\n' < "${NATIVE_LAST_MARKERS[0]}")")"
+        NATIVE_RESUME_CANDIDATES=("$(dirname "${NATIVE_LAST_MARKERS[0]}")/$NATIVE_CHECKPOINT_NAME")
+      fi
     fi
     [[ ${#NATIVE_RESUME_CANDIDATES[@]} -eq 1 && -f "${NATIVE_RESUME_CANDIDATES[0]}" ]] || {
       echo "ERROR: expected exactly one native resume checkpoint" >&2

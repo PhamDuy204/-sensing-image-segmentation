@@ -80,3 +80,39 @@ def test_phase_boundary_routes_epoch_and_native_chunks_to_distinct_pipeline_args
     assert phase_boundary("unet", 15) == {"chunk_end_epoch": 15, "chunk_end_iter": None}
     assert phase_boundary("segnext", 26_666) == {"chunk_end_epoch": None, "chunk_end_iter": 26_666}
     assert phase_boundary("repstdc", 80_000) == {"chunk_end_epoch": None, "chunk_end_iter": 80_000}
+
+
+def test_wait_for_dataset_ready_polls_until_ready(monkeypatch):
+    from scripts import kaggle_fleet
+
+    calls = []
+
+    class Result:
+        def __init__(self, stdout: str, returncode: int = 0):
+            self.stdout = stdout
+            self.stderr = ""
+            self.returncode = returncode
+
+    responses = iter([
+        Result('{"status": "pending", "current_version_number": 1}\n'),
+        Result('{"status": "ready", "current_version_number": 1}\n'),
+    ])
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return next(responses)
+
+    monkeypatch.setattr(kaggle_fleet.subprocess, "run", fake_run)
+    monkeypatch.setattr(kaggle_fleet.time, "sleep", lambda _: None)
+
+    kaggle_fleet._wait_for_dataset_ready(
+        dataset="new-owner/private-resume",
+        token="secret-token",
+        kaggle_bin=Path("/fake/kaggle"),
+        timeout_seconds=10,
+        poll_seconds=1,
+    )
+
+    assert len(calls) == 2
+    assert calls[0][1:4] == ["datasets", "status", "new-owner/private-resume"]
+    assert calls[0][-2:] == ["--format", "json"]

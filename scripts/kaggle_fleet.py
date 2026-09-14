@@ -155,6 +155,46 @@ def _resume_zip(previous_output: Path, staging: Path, *, native: bool = False) -
     return archive
 
 
+
+def _wait_for_dataset_ready(
+    *,
+    dataset: str,
+    token: str,
+    kaggle_bin: Path,
+    timeout_seconds: int = 300,
+    poll_seconds: int = 5,
+) -> None:
+    env = os.environ.copy()
+    env["KAGGLE_API_TOKEN"] = token
+    deadline = time.monotonic() + timeout_seconds
+    last_detail = "dataset status unavailable"
+    while True:
+        result = subprocess.run(
+            [str(kaggle_bin), "datasets", "status", dataset, "--format", "json"],
+            env=env,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            try:
+                payload = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                last_detail = result.stdout.strip() or "invalid JSON from Kaggle dataset status"
+            else:
+                status = str(payload.get("status") or "").strip().lower()
+                last_detail = f"status={status or 'unknown'}"
+                if status == "ready":
+                    return
+                if status in {"error", "failed"}:
+                    raise RuntimeError(f"Kaggle relay dataset {dataset} failed: {last_detail}")
+        else:
+            last_detail = (result.stderr or result.stdout).strip() or f"exit={result.returncode}"
+
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Kaggle relay dataset {dataset} was not ready in time: {last_detail}")
+        time.sleep(poll_seconds)
+
 def create_resume_dataset(
     *,
     model: str,
@@ -183,6 +223,11 @@ def create_resume_dataset(
         env=env,
         check=True,
         text=True,
+    )
+    _wait_for_dataset_ready(
+        dataset=dataset,
+        token=token,
+        kaggle_bin=kaggle_bin,
     )
     return dataset
 

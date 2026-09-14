@@ -332,6 +332,7 @@ def test_native_repro_script_resumes_mmengine_checkpoint_and_chunks_by_iteration
         '--chunk-end-iter "$NATIVE_CHUNK_END_ITER"',
         '--resume-from "$NATIVE_RESUME_CHECKPOINT"',
         'resume_checkpoint.pth',
+        'find /kaggle/input -type f -name resume_checkpoint.pth',
         'last_checkpoint',
     ):
         assert expected in script
