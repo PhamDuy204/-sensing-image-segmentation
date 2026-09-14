@@ -100,10 +100,10 @@ def test_mixed_precision_cli_is_disabled_and_full_precision_is_fixed():
         parse_args(["--mixed-precision", "bf16"])
 
 
-def test_unetformer_is_registered_with_paper_resnet18_default():
+def test_unetformer_defaults_to_validated_swin_b_variant():
     assert "unetformer" in available_models()
     args = parse_args(["--model", "unetformer", "--no-pretrained"])
-    assert args.model_variant == "resnet18"
+    assert args.model_variant == "swin-b"
     assert args.loss == "unetformer"
 
 

@@ -186,6 +186,41 @@ def test_unetformer_uses_official_auxiliary_loss_when_targets_are_given():
     assert any(parameter.grad is not None for parameter in model.model.decoder.aux_head.parameters())
 
 
+def test_unetformer_adapter_defaults_to_swin_b(monkeypatch):
+    from types import SimpleNamespace
+    from torch import nn
+    from oemseg.models import unetformer as module
+
+    captured = {}
+
+    class FakeFTUNetFormer(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = nn.Conv2d(3, 8, 3, padding=1)
+            self.decoder = nn.Conv2d(8, 9, 1)
+
+        def forward(self, images):
+            return self.decoder(self.backbone(images))
+
+    def build_ft(**kwargs):
+        captured.update(kwargs)
+        return FakeFTUNetFormer()
+
+    monkeypatch.setattr(
+        module,
+        "_load_ft_upstream",
+        lambda: SimpleNamespace(ft_unetformer=build_ft),
+        raising=False,
+    )
+    module.sys.path.insert(0, str(module.GEOSEG_DIR))
+    model = module.UNetFormerAdapter(pretrained=False)
+
+    assert captured["pretrained"] is False
+    assert captured["num_classes"] == 9
+    assert captured["decoder_channels"] == 256
+    assert model(torch.randn(1, 3, 64, 64)).shape == (1, 9, 64, 64)
+
+
 def test_unetformer_swin_b_uses_official_ft_factory(monkeypatch):
     from types import SimpleNamespace
     from torch import nn

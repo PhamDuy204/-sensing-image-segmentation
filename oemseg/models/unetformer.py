@@ -63,10 +63,10 @@ class UNetFormerAdapter(SegmentationModelAdapter):
 
     def __init__(
         self,
-        variant: str = "resnet18",
+        variant: str = "swin-b",
         pretrained: bool = True,
         num_classes: int = NUM_CLASSES,
-        decoder_channels: int = 64,
+        decoder_channels: int = 256,
         model: nn.Module | None = None,
     ) -> None:
         super().__init__()
