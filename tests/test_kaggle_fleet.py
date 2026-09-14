@@ -116,3 +116,84 @@ def test_wait_for_dataset_ready_polls_until_ready(monkeypatch):
     assert len(calls) == 2
     assert calls[0][1:4] == ["datasets", "status", "new-owner/private-resume"]
     assert calls[0][-2:] == ["--format", "json"]
+
+
+def test_resume_from_completed_native_part_skips_earlier_parts(monkeypatch, tmp_path: Path):
+    import json
+    from scripts import kaggle_fleet
+
+    fleet_root = tmp_path / "fleet"
+    model_root = fleet_root / "repstdc"
+    part2_root = model_root / "part-02"
+    output_dir = part2_root / "output"
+    native_run = output_dir / "oem_outputs" / "repstdc-paper-repro-t4x2"
+    native_run.mkdir(parents=True)
+    (native_run / "chunk_state.json").write_text(
+        json.dumps({"iteration": 53333, "complete": False})
+    )
+    (native_run / "last_checkpoint").write_text(
+        "/kaggle/working/oem_outputs/repstdc-paper-repro-t4x2/iter_106666.pth\n"
+    )
+    (native_run / "iter_106666.pth").write_bytes(b"checkpoint")
+    part2_root.mkdir(parents=True, exist_ok=True)
+    (part2_root / "state.json").write_text(
+        json.dumps(
+            {
+                "kernel": "oldowner/oem-repstdc-part2",
+                "output_dir": str(output_dir),
+                "status": "SYNC_WARNING",
+            }
+        )
+    )
+
+    class Lock:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kaggle_fleet.kp, "_tool", lambda *_: Path("/fake/tool"))
+    monkeypatch.setattr(
+        kaggle_fleet,
+        "choose_account",
+        lambda **_: (3, Lock(), "newowner", "token", 20.0),
+    )
+    relays = []
+
+    def fake_create_resume_dataset(**kwargs):
+        relays.append(kwargs)
+        return "newowner/relay-dataset"
+
+    monkeypatch.setattr(kaggle_fleet, "create_resume_dataset", fake_create_resume_dataset)
+    submissions = []
+
+    def fake_run_kernel_once(**kwargs):
+        submissions.append(kwargs)
+        out = kwargs["run_root"] / "output"
+        marker = out / "oem_outputs" / "repstdc-paper-repro-t4x2"
+        marker.mkdir(parents=True)
+        (marker / "chunk_state.json").write_text(
+            json.dumps({"iteration": 80000, "complete": True})
+        )
+        return {
+            "kernel": "newowner/oem-repstdc-part3",
+            "output_dir": out,
+            "state_path": kwargs["run_root"] / "state.json",
+            "synced_wandb_runs": [],
+            "wandb_sync_error": None,
+        }
+
+    monkeypatch.setattr(kaggle_fleet.kp, "_run_kernel_once", fake_run_kernel_once)
+
+    rc = kaggle_fleet.run_model(
+        "repstdc",
+        fleet_root,
+        "fixed-sha",
+        1,
+        resume_from_part=2,
+    )
+
+    assert rc == 0
+    assert len(submissions) == 1
+    assert submissions[0]["chunk_end_iter"] == 80000
+    assert submissions[0]["resume_dataset"] == "newowner/relay-dataset"
+    assert relays[0]["part"] == 3
+    assert relays[0]["previous_output"] == output_dir

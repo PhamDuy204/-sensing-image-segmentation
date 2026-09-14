@@ -232,7 +232,25 @@ def create_resume_dataset(
     return dataset
 
 
-def run_model(model: str, fleet_root: Path, repo_ref: str, poll_seconds: int) -> int:
+
+def _load_completed_part(model: str, model_root: Path, part: int) -> tuple[str, str, Path]:
+    state_path = model_root / f"part-{part:02d}" / "state.json"
+    if not state_path.is_file():
+        raise RuntimeError(f"{model}: missing state for resume part {part}: {state_path}")
+    state = json.loads(state_path.read_text())
+    kernel = str(state.get("kernel") or "")
+    if "/" not in kernel:
+        raise RuntimeError(f"{model}: invalid kernel in resume state: {kernel!r}")
+    owner = kernel.split("/", 1)[0]
+    output_dir = Path(str(state.get("output_dir") or (state_path.parent / "output")))
+    markers = list(output_dir.rglob("chunk_state.json"))
+    if len(markers) != 1:
+        raise RuntimeError(
+            f"{model}: resume part {part} is not downloaded yet; expected one chunk_state.json, got {len(markers)}"
+        )
+    return kernel, owner, output_dir
+
+def run_model(model: str, fleet_root: Path, repo_ref: str, poll_seconds: int, resume_from_part: int = 0) -> int:
     client_dir = Path("/home/duypham/.local/share/oem-kaggle-client")
     kaggle_bin = kp._tool(client_dir, "kaggle")
     wandb_bin = kp._tool(client_dir, "wandb")
@@ -243,6 +261,13 @@ def run_model(model: str, fleet_root: Path, repo_ref: str, poll_seconds: int) ->
     previous_kernel = None
     previous_owner = None
     previous_output = None
+    if resume_from_part:
+        plan = phase_plan(model)
+        if resume_from_part < 1 or resume_from_part >= len(plan):
+            raise ValueError(f"resume_from_part must be between 1 and {len(plan) - 1}")
+        previous_kernel, previous_owner, previous_output = _load_completed_part(
+            model, model_root, resume_from_part
+        )
     base_slug = f"oem-{model}-fleet-{fleet_root.name}"
 
     args = kp.build_parser().parse_args(["--model", model, "--repo-ref", repo_ref])
@@ -253,6 +278,8 @@ def run_model(model: str, fleet_root: Path, repo_ref: str, poll_seconds: int) ->
     args.model_variant = None
 
     for part, end_value in enumerate(phase_plan(model), start=1):
+        if part <= resume_from_part:
+            continue
         boundary = phase_boundary(model, end_value)
         account, lock, owner, token, remaining = choose_account(
             preferred=PREFERRED_ACCOUNT[model],
@@ -353,6 +380,12 @@ def main() -> int:
     parser.add_argument("--repo-ref", default="main")
     parser.add_argument("--poll-seconds", type=int, default=60)
     parser.add_argument("--fleet-root", type=Path)
+    parser.add_argument(
+        "--resume-from-part",
+        type=int,
+        default=0,
+        help="reuse a downloaded fleet part and continue from the following part",
+    )
     ns = parser.parse_args()
     if bool(ns.model) == bool(ns.all):
         parser.error("choose exactly one of --model or --all")
@@ -362,7 +395,13 @@ def main() -> int:
     )
     if ns.all:
         return launch_all(fleet_root, repo_ref, ns.poll_seconds)
-    return run_model(ns.model, fleet_root, repo_ref, ns.poll_seconds)
+    return run_model(
+        ns.model,
+        fleet_root,
+        repo_ref,
+        ns.poll_seconds,
+        resume_from_part=ns.resume_from_part,
+    )
 
 
 if __name__ == "__main__":
