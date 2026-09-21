@@ -42,3 +42,35 @@ def test_u2net_auto_loss_is_native_and_dense_override_is_rejected():
     assert resolve_loss_name("auto", "u2net", "full") == "u2net"
     with pytest.raises(ValueError, match="requires --loss u2net"):
         resolve_loss_name("ce_dice", "u2net", "full")
+
+
+def test_u2net_fusion_matches_concat_forward_and_gradients_without_cat(monkeypatch):
+    import copy
+
+    import oemseg.models.u2net_upstream as upstream
+
+    assert hasattr(upstream, "_fuse_side_maps"), "memory-efficient U2-Net fusion helper is missing"
+    fuse = upstream._fuse_side_maps
+
+    torch.manual_seed(7)
+    channels = 3
+    original_maps = [torch.randn(2, channels, 8, 8, requires_grad=True) for _ in range(6)]
+    optimized_maps = [tensor.detach().clone().requires_grad_(True) for tensor in original_maps]
+    original_conv = torch.nn.Conv2d(6 * channels, channels, kernel_size=1)
+    optimized_conv = copy.deepcopy(original_conv)
+
+    expected = original_conv(torch.cat(original_maps, dim=1))
+    expected.square().mean().backward()
+
+    def forbid_cat(*args, **kwargs):
+        raise AssertionError("U2-Net fused head must not materialize the 6-way concatenation")
+
+    monkeypatch.setattr(torch, "cat", forbid_cat)
+    actual = fuse(optimized_maps, optimized_conv)
+    actual.square().mean().backward()
+
+    assert torch.allclose(actual, expected.detach(), rtol=1e-5, atol=1e-6)
+    for actual_map, expected_map in zip(optimized_maps, original_maps):
+        assert torch.allclose(actual_map.grad, expected_map.grad, rtol=1e-5, atol=1e-6)
+    assert torch.allclose(optimized_conv.weight.grad, original_conv.weight.grad, rtol=1e-5, atol=1e-6)
+    assert torch.allclose(optimized_conv.bias.grad, original_conv.bias.grad, rtol=1e-5, atol=1e-6)
