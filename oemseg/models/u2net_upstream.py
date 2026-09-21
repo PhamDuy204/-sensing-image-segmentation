@@ -6,11 +6,13 @@ License: Apache-2.0 (see THIRD_PARTY_LICENSES/U-2-Net-LICENSE)
 
 OEM modifications:
 - expose raw fused/side logits instead of sigmoid probabilities;
-- make the number of output channels configurable for multiclass segmentation.
+- make the number of output channels configurable for multiclass segmentation;
+- fuse side outputs without materializing the full channel-wise concatenation.
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 import math
 
@@ -29,6 +31,39 @@ def _size_map(x, height):
         sizes[h] = size
         size = [math.ceil(w / 2) for w in size]
     return sizes
+
+
+def _fuse_side_maps(maps, outconv):
+    """Apply U2-Net's 1x1 fusion without materializing torch.cat(maps, dim=1)."""
+    if not maps:
+        raise ValueError("U2-Net fusion requires at least one side map")
+    side_channels = maps[0].shape[1]
+    if any(side.shape[1] != side_channels for side in maps):
+        raise ValueError("U2-Net side maps must have the same channel count")
+    if outconv.groups != 1 or outconv.in_channels != side_channels * len(maps):
+        raise ValueError("U2-Net outconv is incompatible with the supplied side maps")
+
+    weight_chunks = outconv.weight.split(side_channels, dim=1)
+    fused = F.conv2d(
+        maps[0],
+        weight_chunks[0],
+        outconv.bias,
+        stride=outconv.stride,
+        padding=outconv.padding,
+        dilation=outconv.dilation,
+        groups=1,
+    )
+    for side, weight in zip(maps[1:], weight_chunks[1:]):
+        fused = fused + F.conv2d(
+            side,
+            weight,
+            None,
+            stride=outconv.stride,
+            padding=outconv.padding,
+            dilation=outconv.dilation,
+            groups=1,
+        )
+    return fused
 
 
 class REBNCONV(nn.Module):
@@ -119,8 +154,7 @@ class U2NET(nn.Module):
         def fuse():
             # fuse saliency probability maps
             maps.reverse()
-            x = torch.cat(maps, 1)
-            x = getattr(self, 'outconv')(x)
+            x = _fuse_side_maps(maps, getattr(self, 'outconv'))
             maps.insert(0, x)
             return maps
 
