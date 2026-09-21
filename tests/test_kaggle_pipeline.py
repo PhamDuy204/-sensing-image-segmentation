@@ -302,3 +302,20 @@ def test_recover_existing_run_polls_and_downloads_without_resubmitting(monkeypat
     recovered = json.loads(state_path.read_text())
     assert recovered["status"] == "SYNCED"
     assert recovered["synced_wandb_runs"] == ["offline-run-x"]
+
+
+def test_u2net_kernel_enables_expandable_cuda_segments_only_for_u2net():
+    from scripts.kaggle_pipeline import build_kernel_files
+
+    u2net_notebook, _ = build_kernel_files(
+        owner="duy18102004", slug="oem-u2net", model="u2net", smoke=False, repo_ref="main"
+    )
+    unet_notebook, _ = build_kernel_files(
+        owner="duy18102004", slug="oem-unet", model="unet", smoke=False, repo_ref="main"
+    )
+
+    u2net_source = "\n".join(u2net_notebook["cells"][0]["source"])
+    unet_source = "\n".join(unet_notebook["cells"][0]["source"])
+
+    assert "PYTORCH_ALLOC_CONF=expandable_segments:True" in u2net_source
+    assert "PYTORCH_ALLOC_CONF=expandable_segments:True" not in unet_source

@@ -53,6 +53,7 @@ def build_kernel_files(
     repo_dir = "/kaggle/tmp/OEM_Segmentation"
     machine_shape = "NvidiaTeslaP100" if model == "unet" else "NvidiaTeslaT4"
     accelerator_kind = "P100" if model == "unet" else "T4X2"
+    allocator_env = "PYTORCH_ALLOC_CONF=expandable_segments:True " if model == "u2net" else ""
     source = [
         "%%bash\n",
         "set -Eeuo pipefail\n",
@@ -66,6 +67,7 @@ def build_kernel_files(
         "cd \"$REPO_DIR\"\n",
         "echo \"repo_head=$(git rev-parse HEAD)\"\n",
         (
+            f"{allocator_env}"
             f"ACCELERATOR_KIND={accelerator_kind} "
             f"MODEL_NAME={shlex.quote(model)} "
             f"MODEL_VARIANT={shlex.quote(model_variant or '')} "

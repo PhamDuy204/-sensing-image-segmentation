@@ -546,3 +546,15 @@ def test_checkpoint_round_trip_restores_train_generator_state(tmp_path: Path):
     actual = torch.randperm(20, generator=generator)
 
     assert torch.equal(actual, expected)
+
+
+def test_u2net_training_enables_ddp_gradient_bucket_views_only_for_u2net():
+    from oemseg.engine import trainer
+
+    assert hasattr(trainer, "distributed_kwargs_handlers")
+    u2net_handlers = trainer.distributed_kwargs_handlers("u2net")
+    unet_handlers = trainer.distributed_kwargs_handlers("unet")
+
+    assert len(u2net_handlers) == 1
+    assert u2net_handlers[0].gradient_as_bucket_view is True
+    assert unet_handlers == []

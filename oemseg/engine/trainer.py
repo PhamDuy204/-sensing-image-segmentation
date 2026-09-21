@@ -13,7 +13,7 @@ from pathlib import Path
 
 import torch
 from accelerate import Accelerator, DataLoaderConfiguration
-from accelerate.utils import broadcast_object_list
+from accelerate.utils import DistributedDataParallelKwargs, broadcast_object_list
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -41,6 +41,13 @@ def configure_torch_performance(device: torch.device) -> None:
 
 def configure_distributed_batchnorm(model: nn.Module, world_size: int) -> nn.Module:
     return nn.SyncBatchNorm.convert_sync_batchnorm(model) if world_size > 1 else model
+
+
+def distributed_kwargs_handlers(model_name: str) -> list[DistributedDataParallelKwargs]:
+    """Reduce U2-Net DDP peak memory by aliasing gradients to all-reduce buckets."""
+    if model_name.lower() == "u2net":
+        return [DistributedDataParallelKwargs(gradient_as_bucket_view=True)]
+    return []
 
 
 def update_validation_state(
@@ -209,6 +216,7 @@ def run_training(args) -> Path:
         mixed_precision="no",
         step_scheduler_with_optimizer=False,
         dataloader_config=DataLoaderConfiguration(non_blocking=True),
+        kwargs_handlers=distributed_kwargs_handlers(getattr(args, "model", "")),
     )
     if accelerator.device.type != "cuda":
         raise RuntimeError("CUDA is required for this experiment")
