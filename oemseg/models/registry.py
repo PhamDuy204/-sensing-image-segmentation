@@ -11,6 +11,7 @@ from oemseg.models.base import SegmentationModelAdapter
 Builder = Callable[[str, bool, str, int], SegmentationModelAdapter]
 _REGISTRY: dict[str, Builder | None] = {
     "unet": None,
+    "u2net": None,
     "unetpp": None,
     "unetformer": None,
     "segformer": None,
@@ -59,6 +60,8 @@ def _load_builder(name: str) -> Builder:
     if _REGISTRY[key] is None:
         if key == "unet":
             from oemseg.models import unet  # noqa: F401
+        elif key == "u2net":
+            from oemseg.models import u2net  # noqa: F401
         elif key == "unetpp":
             from oemseg.models import unetpp  # noqa: F401
         elif key == "unetformer":

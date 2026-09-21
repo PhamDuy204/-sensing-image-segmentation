@@ -68,7 +68,7 @@ export WANDB_MODE=offline
 mkdir -p "$TORCH_HOME" "$HF_HOME" "$OUTPUT_ROOT"
 
 case "$MODEL_NAME" in
-  unet|unetformer|segformer|segnext|repstdc|mambavision|pyramidmamba|mask2former) ;;
+  unet|u2net|unetformer|segformer|segnext|repstdc|mambavision|pyramidmamba|mask2former) ;;
   *) echo "ERROR: unsupported MODEL_NAME=$MODEL_NAME" >&2; exit 2 ;;
 esac
 

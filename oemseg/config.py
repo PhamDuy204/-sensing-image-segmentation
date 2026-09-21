@@ -11,6 +11,7 @@ from oemseg.models.registry import available_models, normalize_name
 OPTIMIZER_NAMES = ("adam", "adamw")
 MODEL_DEFAULT_VARIANTS = {
     "unet": "resnet18",
+    "u2net": "full",
     "unetpp": "resnet18",
     "unetformer": "swin-b",
     "segformer": "b0",
