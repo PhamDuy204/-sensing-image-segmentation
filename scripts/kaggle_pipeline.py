@@ -19,6 +19,7 @@ REPO_URL = "https://github.com/PhamDuy204/-sensing-image-segmentation.git"
 DATASET_SOURCE = "duy18102004/oem-dataset"
 MODELS = (
     "unet",
+    "u2net",
     "unetformer",
     "segformer",
     "segnext",
