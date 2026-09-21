@@ -158,7 +158,12 @@ class U2NET(nn.Module):
             maps.insert(0, x)
             return maps
 
-        unet(x)
+        try:
+            unet(x)
+        finally:
+            # Break unet -> closure -> unet, which otherwise retains side maps
+            # (252 MiB per FP32 9-class 1024px forward) until cyclic GC runs.
+            del unet
         maps = fuse()
         return maps
 
