@@ -319,3 +319,134 @@ def test_u2net_kernel_enables_expandable_cuda_segments_only_for_u2net():
 
     assert "PYTORCH_ALLOC_CONF=expandable_segments:True" in u2net_source
     assert "PYTORCH_ALLOC_CONF=expandable_segments:True" not in unet_source
+
+
+def test_fleet_output_download_retries_without_force(monkeypatch, tmp_path):
+    import subprocess
+    from scripts import kaggle_fleet as fleet
+
+    commands = []
+    sleeps = []
+
+    def fake_run(command, *, env=None, check=False, text=False, **kwargs):
+        commands.append(command)
+        if len(commands) == 1:
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(fleet.subprocess, "run", fake_run)
+    monkeypatch.setattr(fleet.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    fleet._download_kernel_outputs_with_retry(
+        kaggle_bin=tmp_path / "kaggle",
+        kernel="owner/kernel",
+        output_dir=tmp_path / "output",
+        token="secret",
+        attempts=3,
+        base_delay=2,
+    )
+
+    assert len(commands) == 2
+    assert all("-o" not in command for command in commands)
+    assert all("--file-pattern" in command for command in commands)
+    assert sleeps == [2]
+
+
+def test_fleet_recovers_completed_part_and_reuses_persistent_wandb_id(monkeypatch, tmp_path):
+    import json
+    from scripts import kaggle_fleet as fleet
+
+    model_root = tmp_path / "u2net"
+    part_root = model_root / "part-01"
+    output_dir = part_root / "output"
+    output_dir.mkdir(parents=True)
+    state_path = part_root / "state.json"
+    state_path.write_text(json.dumps({
+        "kernel": "owner/oem-u2net-fleet-test-part1",
+        "output_dir": str(output_dir),
+        "status": "COMPLETE",
+    }))
+    marker = output_dir / "oem_outputs" / "u2net-paper-repro-t4x2" / "chunk_state.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({"epoch": 15, "complete": False}))
+
+    calls = []
+    monkeypatch.setattr(
+        fleet,
+        "_token_for_owner",
+        lambda owner: "token" if owner == "owner" else None,
+    )
+    monkeypatch.setattr(
+        fleet,
+        "_download_kernel_outputs_with_retry",
+        lambda **kwargs: calls.append(("download", kwargs["kernel"])),
+    )
+    monkeypatch.setattr(
+        fleet.kp,
+        "_sync_wandb",
+        lambda *args, **kwargs: calls.append(("sync", kwargs["target_id"])) or ["offline-run-x"],
+    )
+
+    wandb_id = fleet._load_or_create_wandb_target_id(model_root)
+    assert fleet._load_or_create_wandb_target_id(model_root) == wandb_id
+
+    result = fleet._recover_existing_part(
+        part_root=part_root,
+        kaggle_bin=tmp_path / "kaggle",
+        wandb_bin=tmp_path / "wandb",
+        wandb_target_id=wandb_id,
+        wandb_append=False,
+    )
+
+    assert result is not None
+    assert result["kernel"] == "owner/oem-u2net-fleet-test-part1"
+    assert result["output_dir"] == output_dir
+    recovered = json.loads(state_path.read_text())
+    assert recovered["status"] == "SYNCED"
+    assert recovered["synced_wandb_runs"] == ["offline-run-x"]
+    assert calls == [
+        ("download", "owner/oem-u2net-fleet-test-part1"),
+        ("sync", wandb_id),
+    ]
+
+
+def test_fleet_recovers_in_process_when_completed_kernel_download_fails(monkeypatch, tmp_path):
+    import subprocess
+    from scripts import kaggle_fleet as fleet
+
+    class Lock:
+        def close(self):
+            pass
+
+    recovered_result = {
+        "kernel": "owner/kernel-part1",
+        "output_dir": tmp_path / "output",
+        "state_path": tmp_path / "state.json",
+        "synced_wandb_runs": ["offline-run-x"],
+    }
+    recover_calls = []
+
+    monkeypatch.setattr(fleet.kp, "_tool", lambda client_dir, name: tmp_path / name)
+    monkeypatch.setattr(fleet, "_load_or_create_wandb_target_id", lambda root: "deadbeef")
+    monkeypatch.setattr(fleet, "phase_plan", lambda model: [None])
+    monkeypatch.setattr(
+        fleet,
+        "choose_account",
+        lambda **kwargs: (3, Lock(), "owner", "token", 20.0),
+    )
+
+    def fake_recover(**kwargs):
+        recover_calls.append(kwargs["part_root"])
+        return None if len(recover_calls) == 1 else recovered_result
+
+    monkeypatch.setattr(fleet, "_recover_existing_part", fake_recover)
+    monkeypatch.setattr(
+        fleet.kp,
+        "_run_kernel_once",
+        lambda **kwargs: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(1, ["kaggle", "kernels", "output"])
+        ),
+    )
+
+    assert fleet.run_model("segnext", tmp_path / "fleet", "a" * 40, 1) == 0
+    assert len(recover_calls) == 2
