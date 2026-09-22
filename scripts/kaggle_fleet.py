@@ -165,6 +165,132 @@ def create_resume_dataset(
     return dataset
 
 
+def _token_for_owner(owner: str) -> str:
+    for account in range(1, 9):
+        token_file = _token_file(account)
+        if not token_file.is_file():
+            continue
+        try:
+            account_owner, token = kp._load_account(token_file)
+        except Exception:
+            continue
+        if account_owner == owner:
+            return token
+    raise RuntimeError(f"no configured Kaggle token found for owner {owner!r}")
+
+
+def _download_kernel_outputs_with_retry(
+    *,
+    kaggle_bin: Path,
+    kernel: str,
+    output_dir: Path,
+    token: str,
+    attempts: int = 5,
+    base_delay: int = 5,
+) -> None:
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["KAGGLE_API_TOKEN"] = token
+    command = [
+        str(kaggle_bin),
+        "kernels",
+        "output",
+        kernel,
+        "-p",
+        str(output_dir),
+        "-q",
+        "--file-pattern",
+        r"^oem_outputs/",
+    ]
+    for attempt in range(1, attempts + 1):
+        try:
+            subprocess.run(command, env=env, check=True, text=True)
+            return
+        except subprocess.CalledProcessError:
+            if attempt == attempts:
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            print(
+                f"{kernel}: output download attempt {attempt}/{attempts} failed; "
+                f"retrying in {delay}s without forcing already-complete files",
+                flush=True,
+            )
+            time.sleep(delay)
+
+
+def _load_or_create_wandb_target_id(model_root: Path) -> str:
+    state_path = model_root / "fleet-state.json"
+    if state_path.is_file():
+        state = json.loads(state_path.read_text())
+        target_id = str(state.get("wandb_target_id") or "")
+        if target_id:
+            return target_id
+    target_id = uuid.uuid4().hex[:8]
+    state_path.write_text(json.dumps({"wandb_target_id": target_id}, indent=2) + "\n")
+    return target_id
+
+
+def _recover_existing_part(
+    *,
+    part_root: Path,
+    kaggle_bin: Path,
+    wandb_bin: Path,
+    wandb_target_id: str,
+    wandb_append: bool,
+) -> dict[str, object] | None:
+    state_path = part_root / "state.json"
+    if not state_path.is_file():
+        return None
+
+    state = json.loads(state_path.read_text())
+    status = str(state.get("status") or "")
+    if status not in {"COMPLETE", "DOWNLOADED", "SYNCED"}:
+        return None
+
+    kernel = str(state.get("kernel") or "")
+    if "/" not in kernel:
+        raise RuntimeError(f"invalid kernel in existing part state: {kernel!r}")
+    output_dir = Path(str(state.get("output_dir") or (part_root / "output"))).resolve()
+    owner = kernel.split("/", 1)[0]
+
+    if status == "COMPLETE":
+        token = _token_for_owner(owner)
+        print(f"{kernel}: recovering completed Kaggle output download", flush=True)
+        _download_kernel_outputs_with_retry(
+            kaggle_bin=kaggle_bin,
+            kernel=kernel,
+            output_dir=output_dir,
+            token=token,
+        )
+        kp._state_update(state_path, state, status="DOWNLOADED")
+        status = "DOWNLOADED"
+
+    synced = list(state.get("synced_wandb_runs") or [])
+    if status == "DOWNLOADED":
+        print(f"{kernel}: syncing recovered offline W&B run(s)", flush=True)
+        synced = kp._sync_wandb(
+            wandb_bin,
+            output_dir,
+            target_id=wandb_target_id,
+            append=wandb_append,
+        )
+        kp._state_update(
+            state_path,
+            state,
+            status="SYNCED",
+            synced_wandb_runs=synced,
+        )
+
+    return {
+        "kernel": kernel,
+        "output_dir": output_dir,
+        "state_path": state_path,
+        "synced_wandb_runs": synced,
+    }
+
+
 def run_model(model: str, fleet_root: Path, repo_ref: str, poll_seconds: int) -> int:
     client_dir = Path("/home/duypham/.local/share/oem-kaggle-client")
     kaggle_bin = kp._tool(client_dir, "kaggle")
@@ -172,7 +298,7 @@ def run_model(model: str, fleet_root: Path, repo_ref: str, poll_seconds: int) ->
     model_root = fleet_root / model
     model_root.mkdir(parents=True, exist_ok=True)
     lock_root = fleet_root / "locks"
-    wandb_target_id = uuid.uuid4().hex[:8]
+    wandb_target_id = _load_or_create_wandb_target_id(model_root)
     previous_kernel = None
     previous_owner = None
     previous_output = None
@@ -186,6 +312,30 @@ def run_model(model: str, fleet_root: Path, repo_ref: str, poll_seconds: int) ->
     args.model_variant = None
 
     for part, end_epoch in enumerate(phase_plan(model), start=1):
+        part_root = model_root / f"part-{part:02d}"
+        recovered = _recover_existing_part(
+            part_root=part_root,
+            kaggle_bin=kaggle_bin,
+            wandb_bin=wandb_bin,
+            wandb_target_id=wandb_target_id,
+            wandb_append=part > 1,
+        )
+        if recovered is not None:
+            previous_kernel = str(recovered["kernel"])
+            previous_owner = previous_kernel.split("/", 1)[0]
+            previous_output = Path(recovered["output_dir"])
+            print(f"{model}: recovered existing part {part}: {previous_kernel}", flush=True)
+            if end_epoch is None:
+                break
+            markers = list(previous_output.rglob("chunk_state.json"))
+            if len(markers) != 1:
+                raise RuntimeError(f"{model}: expected one chunk_state.json, got {len(markers)}")
+            state = json.loads(markers[0].read_text())
+            if bool(state.get("complete")):
+                print(f"{model}: completed at epoch {state.get('epoch')}", flush=True)
+                break
+            continue
+
         account, lock, owner, token, remaining = choose_account(
             preferred=PREFERRED_ACCOUNT[model],
             previous_owner=previous_owner,
@@ -212,20 +362,31 @@ def run_model(model: str, fleet_root: Path, repo_ref: str, poll_seconds: int) ->
 
         try:
             slug = f"{base_slug}-part{part}" if end_epoch is not None else base_slug
-            result = kp._run_kernel_once(
-                args=args,
-                owner=owner,
-                token=token,
-                kaggle_bin=kaggle_bin,
-                wandb_bin=wandb_bin,
-                slug=slug,
-                run_root=model_root / f"part-{part:02d}",
-                chunk_end_epoch=end_epoch,
-                previous_kernel=previous_kernel if same_owner else None,
-                resume_dataset=relay_dataset,
-                wandb_target_id=wandb_target_id if end_epoch is not None else None,
-                wandb_append=part > 1,
-            )
+            try:
+                result = kp._run_kernel_once(
+                    args=args,
+                    owner=owner,
+                    token=token,
+                    kaggle_bin=kaggle_bin,
+                    wandb_bin=wandb_bin,
+                    slug=slug,
+                    run_root=part_root,
+                    chunk_end_epoch=end_epoch,
+                    previous_kernel=previous_kernel if same_owner else None,
+                    resume_dataset=relay_dataset,
+                    wandb_target_id=wandb_target_id if end_epoch is not None else None,
+                    wandb_append=part > 1,
+                )
+            except subprocess.CalledProcessError:
+                result = _recover_existing_part(
+                    part_root=part_root,
+                    kaggle_bin=kaggle_bin,
+                    wandb_bin=wandb_bin,
+                    wandb_target_id=wandb_target_id,
+                    wandb_append=part > 1,
+                )
+                if result is None:
+                    raise
         finally:
             lock.close()
 
